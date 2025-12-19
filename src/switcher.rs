@@ -28,7 +28,9 @@ use wayland_client::{
 };
 
 use crate::backend::{backend_windows, focus_window, focused_output_info};
-use crate::config::{CORNER_RADIUS, HIGHLIGHT_PADDING, ICON_SIZE, ICON_SPACING, PANEL_PADDING};
+use crate::config::{
+    BORDER_WIDTH, CORNER_RADIUS, HIGHLIGHT_PADDING, ICON_SIZE, ICON_SPACING, PANEL_PADDING,
+};
 use crate::icon::IconCache;
 use crate::mru::MruState;
 use crate::types::{BackendKind, WindowEntry};
@@ -162,7 +164,7 @@ impl Switcher {
             pixmap.fill(Color::from_rgba8(0, 0, 0, 0));
 
             let transform = Transform::from_scale(self.buffer_scale as f32, self.buffer_scale as f32);
-            let background = rounded_rect_path(
+            let outer = rounded_rect_path(
                 0.0,
                 0.0,
                 self.width as f32,
@@ -170,8 +172,21 @@ impl Switcher {
                 CORNER_RADIUS,
             );
             let mut paint = Paint::default();
+            paint.set_color(Color::from_rgba8(255, 255, 255, 36));
+            pixmap.fill_path(&outer, &paint, tiny_skia::FillRule::Winding, transform, None);
+
+            let inset = BORDER_WIDTH.max(0.0);
+            let inner_width = (self.width as f32 - inset * 2.0).max(0.0);
+            let inner_height = (self.height as f32 - inset * 2.0).max(0.0);
+            let inner = rounded_rect_path(
+                inset,
+                inset,
+                inner_width,
+                inner_height,
+                (CORNER_RADIUS - inset).max(0.0),
+            );
             paint.set_color(Color::from_rgba8(20, 20, 20, 220));
-            pixmap.fill_path(&background, &paint, tiny_skia::FillRule::Winding, transform, None);
+            pixmap.fill_path(&inner, &paint, tiny_skia::FillRule::Winding, transform, None);
 
             let item_size = ICON_SIZE + HIGHLIGHT_PADDING * 2;
             let total_width = self.windows.len() as i32 * item_size as i32
