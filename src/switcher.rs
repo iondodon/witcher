@@ -1,13 +1,14 @@
 use anyhow::{Context, Result};
 use smithay_client_toolkit::{
     compositor::{CompositorHandler, CompositorState},
-    delegate_compositor, delegate_keyboard, delegate_layer, delegate_output, delegate_registry,
-    delegate_seat, delegate_shm,
+    delegate_compositor, delegate_keyboard, delegate_layer, delegate_output, delegate_pointer,
+    delegate_registry, delegate_seat, delegate_shm,
     output::{OutputHandler, OutputState},
     registry::{ProvidesRegistryState, RegistryState},
     registry_handlers,
     seat::{
         keyboard::{KeyEvent, KeyboardHandler, Keysym, Modifiers},
+        pointer::{PointerEvent, PointerEventKind, PointerHandler, BTN_LEFT},
         Capability, SeatHandler, SeatState,
     },
     shell::{
@@ -26,7 +27,7 @@ use std::os::unix::net::UnixStream;
 use tiny_skia::{Color, Paint, PathBuilder, PixmapMut, PixmapPaint, Transform};
 use wayland_client::{
     globals::registry_queue_init,
-    protocol::{wl_keyboard, wl_output, wl_seat, wl_shm, wl_surface},
+    protocol::{wl_keyboard, wl_output, wl_pointer, wl_seat, wl_shm, wl_surface},
     Connection, QueueHandle,
 };
 
@@ -105,11 +106,14 @@ pub fn run_switcher(
         first_configure: true,
         exit: false,
         keyboard: None,
+        pointer: None,
         modifiers: Modifiers::default(),
         windows,
         selected,
+        hovered: None,
         redraw: true,
         finalized: false,
+        canceled: false,
     };
 
     wake_read
@@ -147,7 +151,11 @@ pub fn run_switcher(
         }
     }
 
-    Ok(app.windows.get(app.selected).map(|w| w.id))
+    if app.canceled {
+        Ok(None)
+    } else {
+        Ok(app.windows.get(app.selected).map(|w| w.id))
+    }
 }
 
 struct Switcher {
@@ -165,11 +173,14 @@ struct Switcher {
     first_configure: bool,
     exit: bool,
     keyboard: Option<wl_keyboard::WlKeyboard>,
+    pointer: Option<wl_pointer::WlPointer>,
     modifiers: Modifiers,
     windows: Vec<WindowEntry>,
     selected: usize,
+    hovered: Option<usize>,
     redraw: bool,
     finalized: bool,
+    canceled: bool,
 }
 
 impl Switcher {
@@ -231,30 +242,34 @@ impl Switcher {
             paint.set_color(Color::from_rgba8(20, 20, 20, 220));
             pixmap.fill_path(&inner, &paint, tiny_skia::FillRule::Winding, transform, None);
 
-            let item_size = ICON_SIZE + HIGHLIGHT_PADDING * 2;
-            let total_width = self.windows.len() as i32 * item_size as i32
-                + (self.windows.len().saturating_sub(1) as i32 * ICON_SPACING as i32);
-            let available = self.width as i32 - (PANEL_PADDING as i32 * 2);
-            let start_x = (PANEL_PADDING as i32 + ((available - total_width) / 2)).max(0);
-            let y = self.height as i32 / 2 - (ICON_SIZE / 2) as i32;
-            for (idx, window) in self.windows.iter().enumerate() {
-                let item_x = start_x + idx as i32 * (item_size + ICON_SPACING) as i32;
-                let icon_x = item_x + HIGHLIGHT_PADDING as i32;
-                if idx == self.selected {
-                    let highlight = rounded_rect_path(
-                        item_x as f32,
-                        (y - HIGHLIGHT_PADDING as i32) as f32,
-                        item_size as f32,
-                        item_size as f32,
-                        CORNER_RADIUS * 0.7,
-                    );
-                    let mut paint = Paint::default();
-                    paint.set_color(Color::from_rgba8(255, 255, 255, 28));
-                    pixmap.fill_path(
-                        &highlight,
-                        &paint,
-                        tiny_skia::FillRule::Winding,
-                        transform,
+        let item_size = ICON_SIZE + HIGHLIGHT_PADDING * 2;
+        let total_width = self.windows.len() as i32 * item_size as i32
+            + (self.windows.len().saturating_sub(1) as i32 * ICON_SPACING as i32);
+        let available = self.width as i32 - (PANEL_PADDING as i32 * 2);
+        let start_x = (PANEL_PADDING as i32 + ((available - total_width) / 2)).max(0);
+        let y = self.height as i32 / 2 - (ICON_SIZE / 2) as i32;
+        let hover_y = y - HIGHLIGHT_PADDING as i32;
+        for (idx, window) in self.windows.iter().enumerate() {
+            let item_x = start_x + idx as i32 * (item_size + ICON_SPACING) as i32;
+            let icon_x = item_x + HIGHLIGHT_PADDING as i32;
+            let is_selected = idx == self.selected;
+            let is_hovered = self.hovered == Some(idx);
+            if is_selected || is_hovered {
+                let highlight = rounded_rect_path(
+                    item_x as f32,
+                    hover_y as f32,
+                    item_size as f32,
+                    item_size as f32,
+                    CORNER_RADIUS * 0.7,
+                );
+                let mut paint = Paint::default();
+                let alpha = if is_selected { 36 } else { 20 };
+                paint.set_color(Color::from_rgba8(255, 255, 255, alpha));
+                pixmap.fill_path(
+                    &highlight,
+                    &paint,
+                    tiny_skia::FillRule::Winding,
+                    transform,
                         None,
                     );
                 }
@@ -299,6 +314,10 @@ impl Switcher {
     }
 
     fn finalize(&mut self) {
+        if self.canceled {
+            self.exit = true;
+            return;
+        }
         if self.finalized {
             return;
         }
@@ -315,6 +334,32 @@ impl Switcher {
             let top = ((output_h - self.height as i32) / 2).max(0);
             self.layer.set_margin(top, 0, 0, left);
         }
+    }
+
+    fn hit_test(&self, position: (f64, f64)) -> Option<usize> {
+        if self.windows.is_empty() {
+            return None;
+        }
+        let (x, y) = position;
+        let item_size = (ICON_SIZE + HIGHLIGHT_PADDING * 2) as f64;
+        let total_width = self.windows.len() as f64 * item_size
+            + (self.windows.len().saturating_sub(1) as f64 * ICON_SPACING as f64);
+        let available = self.width as f64 - (PANEL_PADDING as f64 * 2.0);
+        let start_x = (PANEL_PADDING as f64 + ((available - total_width) / 2.0)).max(0.0);
+        let y_top = (self.height as f64 / 2.0) - (ICON_SIZE as f64 / 2.0)
+            - HIGHLIGHT_PADDING as f64;
+        if y < y_top || y > y_top + item_size {
+            return None;
+        }
+        let idx = ((x - start_x) / (item_size + ICON_SPACING as f64)).floor() as i32;
+        if idx < 0 || idx as usize >= self.windows.len() {
+            return None;
+        }
+        let item_x = start_x + idx as f64 * (item_size + ICON_SPACING as f64);
+        if x < item_x || x > item_x + item_size {
+            return None;
+        }
+        Some(idx as usize)
     }
 }
 
@@ -438,6 +483,10 @@ impl SeatHandler for Switcher {
                 .expect("create keyboard");
             self.keyboard = Some(keyboard);
         }
+        if capability == Capability::Pointer && self.pointer.is_none() {
+            let pointer = self.seat_state.get_pointer(qh, &seat).expect("create pointer");
+            self.pointer = Some(pointer);
+        }
     }
 
     fn remove_capability(
@@ -450,6 +499,11 @@ impl SeatHandler for Switcher {
         if capability == Capability::Keyboard {
             if let Some(keyboard) = self.keyboard.take() {
                 keyboard.release();
+            }
+        }
+        if capability == Capability::Pointer {
+            if let Some(pointer) = self.pointer.take() {
+                pointer.release();
             }
         }
     }
@@ -488,15 +542,17 @@ impl KeyboardHandler for Switcher {
         _serial: u32,
         event: KeyEvent,
     ) {
+        if is_escape_key(&event) {
+            self.canceled = true;
+            self.exit = true;
+            return;
+        }
         match event.keysym {
             Keysym::Tab => {
                 self.cycle(1, qh);
             }
             Keysym::ISO_Left_Tab => {
                 self.cycle(-1, qh);
-            }
-            Keysym::Escape => {
-                self.exit = true;
             }
             Keysym::Return | Keysym::KP_Enter => {
                 self.finalize();
@@ -513,6 +569,14 @@ impl KeyboardHandler for Switcher {
         _serial: u32,
         event: KeyEvent,
     ) {
+        if is_escape_key(&event) {
+            self.canceled = true;
+            self.exit = true;
+            return;
+        }
+        if self.canceled {
+            return;
+        }
         if matches!(event.keysym, Keysym::Alt_L | Keysym::Alt_R) {
             self.finalize();
         }
@@ -527,10 +591,63 @@ impl KeyboardHandler for Switcher {
         modifiers: Modifiers,
         _layout: u32,
     ) {
+        if self.canceled {
+            return;
+        }
         let was_alt = self.modifiers.alt;
         self.modifiers = modifiers;
         if was_alt && !modifiers.alt {
             self.finalize();
+        }
+    }
+}
+
+impl PointerHandler for Switcher {
+    fn pointer_frame(
+        &mut self,
+        _conn: &Connection,
+        qh: &QueueHandle<Self>,
+        _pointer: &wl_pointer::WlPointer,
+        events: &[PointerEvent],
+    ) {
+        let mut needs_redraw = false;
+        for event in events {
+            if &event.surface != self.layer.wl_surface() {
+                continue;
+            }
+            match event.kind {
+                PointerEventKind::Enter { .. } | PointerEventKind::Motion { .. } => {
+                    let hovered = self.hit_test(event.position);
+                    if hovered != self.hovered {
+                        self.hovered = hovered;
+                        self.redraw = true;
+                        needs_redraw = true;
+                    }
+                }
+                PointerEventKind::Leave { .. } => {
+                    if self.hovered.is_some() {
+                        self.hovered = None;
+                        self.redraw = true;
+                        needs_redraw = true;
+                    }
+                }
+                PointerEventKind::Press { button, .. } => {
+                    if button == BTN_LEFT {
+                        if let Some(idx) = self.hit_test(event.position) {
+                            if idx != self.selected {
+                                self.selected = idx;
+                                self.redraw = true;
+                                needs_redraw = true;
+                            }
+                            self.finalize();
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+        if needs_redraw && !self.exit {
+            self.draw(qh);
         }
     }
 }
@@ -546,6 +663,7 @@ delegate_output!(Switcher);
 delegate_shm!(Switcher);
 delegate_seat!(Switcher);
 delegate_keyboard!(Switcher);
+delegate_pointer!(Switcher);
 delegate_layer!(Switcher);
 delegate_registry!(Switcher);
 
@@ -659,4 +777,8 @@ fn rounded_rect_path(x: f32, y: f32, width: f32, height: f32, radius: f32) -> ti
     pb.quad_to(x, y, x + r, y);
     pb.close();
     pb.finish().expect("rounded rect path")
+}
+
+fn is_escape_key(event: &KeyEvent) -> bool {
+    matches!(event.keysym, Keysym::Escape | Keysym::Cancel) || matches!(event.raw_code, 1 | 9)
 }
