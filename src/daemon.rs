@@ -19,11 +19,11 @@ use crate::switcher::{run_switcher, SwitcherControl};
 use crate::types::BackendKind;
 
 pub fn send_show() -> Result<()> {
-    send_command(b"show")
+    send_command(b"cycle-next")
 }
 
 pub fn send_show_prev() -> Result<()> {
-    send_command(b"prev")
+    send_command(b"cycle-prev")
 }
 
 fn send_command(cmd: &[u8]) -> Result<()> {
@@ -85,7 +85,7 @@ pub fn run_daemon(backend: BackendKind) -> Result<()> {
         let Ok(msg) = rx.recv() else {
             continue;
         };
-        if matches!(msg, DaemonMsg::Show | DaemonMsg::ShowPrev) {
+        if matches!(msg, DaemonMsg::CycleNext | DaemonMsg::CyclePrev) {
             while rx.try_recv().is_ok() {}
             let (control_tx, control_rx) = mpsc::channel();
             let (wake_write, wake_read) = UnixStream::pair().context("create wake pipe")?;
@@ -156,10 +156,10 @@ fn bind_listener(path: &PathBuf) -> Result<UnixListener> {
 
 fn parse_socket_msg(buf: &[u8]) -> DaemonMsg {
     let text = std::str::from_utf8(buf).unwrap_or("").trim();
-    if text.eq_ignore_ascii_case("prev") {
-        DaemonMsg::ShowPrev
+    if text.eq_ignore_ascii_case("cycle-prev") {
+        DaemonMsg::CyclePrev
     } else {
-        DaemonMsg::Show
+        DaemonMsg::CycleNext
     }
 }
 
@@ -172,8 +172,8 @@ fn try_send_control(
         return false;
     };
     let control = match msg {
-        DaemonMsg::Show => SwitcherControl::CycleNext,
-        DaemonMsg::ShowPrev => SwitcherControl::CyclePrev,
+        DaemonMsg::CycleNext => SwitcherControl::CycleNext,
+        DaemonMsg::CyclePrev => SwitcherControl::CyclePrev,
     };
     sender.send(control);
     true
@@ -181,6 +181,6 @@ fn try_send_control(
 
 #[derive(Clone, Copy)]
 enum DaemonMsg {
-    Show,
-    ShowPrev,
+    CycleNext,
+    CyclePrev,
 }
