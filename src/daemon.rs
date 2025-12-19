@@ -1,6 +1,8 @@
 use anyhow::{Context, Result};
 use std::{
+    fs::OpenOptions,
     io::{Read, Write},
+    os::fd::AsRawFd,
     os::unix::net::{UnixListener, UnixStream},
     path::PathBuf,
     sync::{
@@ -47,6 +49,7 @@ impl SwitcherControlSender {
 }
 
 pub fn run_daemon(backend: BackendKind) -> Result<()> {
+    let _lock = acquire_daemon_lock()?;
     let socket_path = runtime_socket_path("witcher.sock")?;
     let _listener = match bind_listener(&socket_path) {
         Ok(listener) => listener,
@@ -106,6 +109,29 @@ pub fn run_daemon(backend: BackendKind) -> Result<()> {
             while rx.try_recv().is_ok() {}
         }
     }
+}
+
+struct DaemonLock {
+    _file: std::fs::File,
+}
+
+fn acquire_daemon_lock() -> Result<DaemonLock> {
+    let path = runtime_socket_path("witcher.lock")?;
+    let file = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .open(&path)
+        .with_context(|| format!("open {}", path.display()))?;
+    let rc = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
+    if rc != 0 {
+        let err = std::io::Error::last_os_error();
+        return Err(anyhow::anyhow!(
+            "witcher daemon already running: {}",
+            err
+        ));
+    }
+    Ok(DaemonLock { _file: file })
 }
 
 fn runtime_socket_path(name: &str) -> Result<PathBuf> {
