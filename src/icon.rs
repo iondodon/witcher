@@ -121,29 +121,70 @@ fn desktop_icon_name(app_id: &str) -> Option<String> {
         }
     }
 
-    for base in paths {
+    for base in &paths {
         for name in &candidates {
             let file = if name.ends_with(".desktop") {
                 base.join(name)
             } else {
                 base.join(format!("{name}.desktop"))
             };
-            if let Ok(icon) = read_desktop_icon(&file) {
-                if let Some(icon) = icon {
+            if let Ok(info) = parse_desktop_entry(&file) {
+                if let Some(info) = info {
+                    if let Some(icon) = info.icon {
+                        return Some(icon);
+                    }
+                }
+            }
+        }
+    }
+
+    let mut candidates_lower = std::collections::HashSet::new();
+    for name in &candidates {
+        candidates_lower.insert(name.to_ascii_lowercase());
+    }
+
+    for base in &paths {
+        let entries = match fs::read_dir(&base) {
+            Ok(entries) => entries,
+            Err(_) => continue,
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.extension().and_then(|ext| ext.to_str()) != Some("desktop") {
+                continue;
+            }
+            let info = match parse_desktop_entry(&path) {
+                Ok(Some(info)) => info,
+                _ => continue,
+            };
+            let startup = match info.startup_wm_class {
+                Some(startup) => startup,
+                None => continue,
+            };
+            if candidates_lower.contains(&startup.to_ascii_lowercase()) {
+                if let Some(icon) = info.icon {
                     return Some(icon);
                 }
             }
         }
     }
+
     None
 }
 
-fn read_desktop_icon(path: &Path) -> Result<Option<String>> {
+struct DesktopEntryInfo {
+    icon: Option<String>,
+    startup_wm_class: Option<String>,
+}
+
+fn parse_desktop_entry(path: &Path) -> Result<Option<DesktopEntryInfo>> {
     let content = match fs::read_to_string(path) {
         Ok(content) => content,
         Err(_) => return Ok(None),
     };
     let mut in_entry = false;
+    let mut icon = None;
+    let mut startup_wm_class = None;
     for line in content.lines() {
         let line = line.trim();
         if line.is_empty() || line.starts_with('#') {
@@ -158,11 +199,24 @@ fn read_desktop_icon(path: &Path) -> Result<Option<String>> {
         }
         if let Some(value) = line.strip_prefix("Icon=") {
             let value = value.trim();
-            if value.is_empty() {
-                continue;
+            if !value.is_empty() {
+                icon = Some(value.to_string());
             }
-            return Ok(Some(value.to_string()));
+            continue;
+        }
+        if let Some(value) = line.strip_prefix("StartupWMClass=") {
+            let value = value.trim();
+            if !value.is_empty() {
+                startup_wm_class = Some(value.to_string());
+            }
+            continue;
         }
     }
-    Ok(None)
+    if icon.is_none() && startup_wm_class.is_none() {
+        return Ok(None);
+    }
+    Ok(Some(DesktopEntryInfo {
+        icon,
+        startup_wm_class,
+    }))
 }
