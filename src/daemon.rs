@@ -1,21 +1,50 @@
 use anyhow::{Context, Result};
-use evdev::{Device, InputEventKind, Key};
 use std::{
     io::{Read, Write},
     os::unix::net::{UnixListener, UnixStream},
     path::PathBuf,
     sync::{
-        atomic::{AtomicBool, Ordering},
         mpsc,
         Arc,
+        Mutex,
     },
     thread,
 };
 
 use crate::icon::IconCache;
 use crate::mru::MruState;
-use crate::switcher::run_switcher;
+use crate::switcher::{run_switcher, SwitcherControl};
 use crate::types::BackendKind;
+
+pub fn send_show() -> Result<()> {
+    send_command(b"show")
+}
+
+pub fn send_show_prev() -> Result<()> {
+    send_command(b"prev")
+}
+
+fn send_command(cmd: &[u8]) -> Result<()> {
+    let socket_path = runtime_socket_path("witcher.sock")?;
+    let mut stream = UnixStream::connect(&socket_path)
+        .with_context(|| format!("connect {}", socket_path.display()))?;
+    let _ = stream.write_all(cmd);
+    let mut buf = [0u8; 8];
+    let _ = stream.read(&mut buf);
+    Ok(())
+}
+
+struct SwitcherControlSender {
+    tx: mpsc::Sender<SwitcherControl>,
+    wake: UnixStream,
+}
+
+impl SwitcherControlSender {
+    fn send(&mut self, msg: SwitcherControl) {
+        let _ = self.tx.send(msg);
+        let _ = self.wake.write_all(b"x");
+    }
+}
 
 pub fn run_daemon(backend: BackendKind) -> Result<()> {
     let socket_path = runtime_socket_path("witcher.sock")?;
@@ -25,22 +54,27 @@ pub fn run_daemon(backend: BackendKind) -> Result<()> {
     };
 
     let (tx, rx) = mpsc::channel::<DaemonMsg>();
+    let switcher_sender: Arc<Mutex<Option<SwitcherControlSender>>> = Arc::new(Mutex::new(None));
     let listener = _listener.try_clone().context("clone listener")?;
     let tx_listener = tx.clone();
+    let sender_listener = switcher_sender.clone();
     thread::spawn(move || {
         loop {
             let Ok((mut stream, _)) = listener.accept() else {
                 continue;
             };
             let mut buf = [0u8; 32];
-            let _ = stream.read(&mut buf);
+            let read_len = match stream.read(&mut buf) {
+                Ok(len) => len,
+                Err(_) => 0,
+            };
             let _ = stream.write_all(b"ok");
-            let _ = tx_listener.send(DaemonMsg::Show);
+            let msg = parse_socket_msg(&buf[..read_len]);
+            if !try_send_control(&sender_listener, &msg) {
+                let _ = tx_listener.send(msg);
+            }
         }
     });
-
-    let active = Arc::new(AtomicBool::new(false));
-    spawn_evdev_listener(tx.clone(), active.clone());
 
     let mut icon_cache = IconCache::default();
     let mut mru = MruState::default();
@@ -48,15 +82,27 @@ pub fn run_daemon(backend: BackendKind) -> Result<()> {
         let Ok(msg) = rx.recv() else {
             continue;
         };
-        if matches!(msg, DaemonMsg::Show) {
+        if matches!(msg, DaemonMsg::Show | DaemonMsg::ShowPrev) {
             while rx.try_recv().is_ok() {}
-            active.store(true, Ordering::SeqCst);
-            match run_switcher(backend, &mut icon_cache, &mut mru) {
+            let (control_tx, control_rx) = mpsc::channel();
+            let (wake_write, wake_read) = UnixStream::pair().context("create wake pipe")?;
+            {
+                let mut guard = switcher_sender.lock().unwrap();
+                *guard = Some(SwitcherControlSender {
+                    tx: control_tx,
+                    wake: wake_write,
+                });
+            }
+            let result = run_switcher(backend, &mut icon_cache, &mut mru, control_rx, wake_read);
+            {
+                let mut guard = switcher_sender.lock().unwrap();
+                *guard = None;
+            }
+            match result {
                 Ok(Some(id)) => mru.update_on_focus(id),
                 Ok(None) => {}
                 Err(err) => eprintln!("witcher: switcher error: {err:#}"),
             }
-            active.store(false, Ordering::SeqCst);
             while rx.try_recv().is_ok() {}
         }
     }
@@ -82,64 +128,33 @@ fn bind_listener(path: &PathBuf) -> Result<UnixListener> {
     Ok(listener)
 }
 
+fn parse_socket_msg(buf: &[u8]) -> DaemonMsg {
+    let text = std::str::from_utf8(buf).unwrap_or("").trim();
+    if text.eq_ignore_ascii_case("prev") {
+        DaemonMsg::ShowPrev
+    } else {
+        DaemonMsg::Show
+    }
+}
+
+fn try_send_control(
+    sender: &Arc<Mutex<Option<SwitcherControlSender>>>,
+    msg: &DaemonMsg,
+) -> bool {
+    let mut guard = sender.lock().unwrap();
+    let Some(sender) = guard.as_mut() else {
+        return false;
+    };
+    let control = match msg {
+        DaemonMsg::Show => SwitcherControl::CycleNext,
+        DaemonMsg::ShowPrev => SwitcherControl::CyclePrev,
+    };
+    sender.send(control);
+    true
+}
+
 #[derive(Clone, Copy)]
 enum DaemonMsg {
     Show,
-}
-
-fn spawn_evdev_listener(tx: mpsc::Sender<DaemonMsg>, active: Arc<AtomicBool>) {
-    let devices = match enumerate_keyboards() {
-        Ok(devices) => devices,
-        Err(err) => {
-            eprintln!("witcher: evdev enumerate error: {err:#}");
-            return;
-        }
-    };
-    if devices.is_empty() {
-        eprintln!("witcher: no keyboard devices with Alt+Tab found");
-        return;
-    }
-    for mut device in devices {
-        let tx = tx.clone();
-        let active = active.clone();
-        thread::spawn(move || {
-            let mut alt_down = false;
-            loop {
-                let events = match device.fetch_events() {
-                    Ok(events) => events,
-                    Err(_) => continue,
-                };
-                for ev in events {
-                    if let InputEventKind::Key(key) = ev.kind() {
-                        let value = ev.value();
-                        match key {
-                            Key::KEY_LEFTALT | Key::KEY_RIGHTALT => {
-                                alt_down = value != 0;
-                            }
-                            Key::KEY_TAB => {
-                                if alt_down && value != 0 && !active.load(Ordering::SeqCst) {
-                                    let _ = tx.send(DaemonMsg::Show);
-                                }
-                            }
-                            _ => {}
-                        }
-                    }
-                }
-            }
-        });
-    }
-}
-
-fn enumerate_keyboards() -> Result<Vec<Device>> {
-    let mut devices = Vec::new();
-    for (_path, device) in evdev::enumerate() {
-        if let Some(keys) = device.supported_keys() {
-            let has_alt = keys.contains(Key::KEY_LEFTALT) || keys.contains(Key::KEY_RIGHTALT);
-            let has_tab = keys.contains(Key::KEY_TAB);
-            if has_alt && has_tab {
-                devices.push(device);
-            }
-        }
-    }
-    Ok(devices)
+    ShowPrev,
 }

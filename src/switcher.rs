@@ -20,6 +20,9 @@ use smithay_client_toolkit::{
     shm::{slot::SlotPool, Shm, ShmHandler},
 };
 use std::collections::HashSet;
+use std::io::Read;
+use std::os::fd::{AsFd, AsRawFd};
+use std::os::unix::net::UnixStream;
 use tiny_skia::{Color, Paint, PathBuilder, PixmapMut, PixmapPaint, Transform};
 use wayland_client::{
     globals::registry_queue_init,
@@ -35,10 +38,17 @@ use crate::icon::IconCache;
 use crate::mru::MruState;
 use crate::types::{BackendKind, WindowEntry};
 
+pub enum SwitcherControl {
+    CycleNext,
+    CyclePrev,
+}
+
 pub fn run_switcher(
     backend: BackendKind,
     icon_cache: &mut IconCache,
     mru: &mut MruState,
+    control_rx: std::sync::mpsc::Receiver<SwitcherControl>,
+    mut wake_read: UnixStream,
 ) -> Result<Option<u64>> {
     let mut windows = load_windows(backend, icon_cache).context("load windows via backend")?;
     if windows.is_empty() {
@@ -102,13 +112,39 @@ pub fn run_switcher(
         finalized: false,
     };
 
+    wake_read
+        .set_nonblocking(true)
+        .context("set wake pipe nonblocking")?;
+    let wayland_fd = conn.as_fd().as_raw_fd();
+    let wake_fd = wake_read.as_raw_fd();
+
     loop {
         if app.exit {
             break;
         }
+        drain_controls(&mut app, &qh, &control_rx);
         event_queue
-            .blocking_dispatch(&mut app)
+            .dispatch_pending(&mut app)
             .context("dispatch events")?;
+        conn.flush().context("flush wayland")?;
+        if app.exit {
+            break;
+        }
+        let (wayland_ready, wake_ready) =
+            poll_wayland_and_wake(wayland_fd, wake_fd).context("poll inputs")?;
+        if wake_ready {
+            drain_wake_pipe(&mut wake_read);
+            drain_controls(&mut app, &qh, &control_rx);
+            conn.flush().context("flush wayland")?;
+        }
+        if app.exit {
+            break;
+        }
+        if wayland_ready {
+            event_queue
+                .blocking_dispatch(&mut app)
+                .context("dispatch events")?;
+        }
     }
 
     Ok(app.windows.get(app.selected).map(|w| w.id))
@@ -137,6 +173,13 @@ struct Switcher {
 }
 
 impl Switcher {
+    fn handle_control(&mut self, msg: SwitcherControl, qh: &QueueHandle<Self>) {
+        match msg {
+            SwitcherControl::CycleNext => self.cycle(1, qh),
+            SwitcherControl::CyclePrev => self.cycle(-1, qh),
+        }
+    }
+
     fn draw(&mut self, qh: &QueueHandle<Self>) {
         let buffer_width = self.width * self.buffer_scale;
         let buffer_height = self.height * self.buffer_scale;
@@ -548,6 +591,57 @@ fn load_windows(backend: BackendKind, icon_cache: &mut IconCache) -> Result<Vec<
 fn swizzle_rgba_to_bgra(bytes: &mut [u8]) {
     for pixel in bytes.chunks_exact_mut(4) {
         pixel.swap(0, 2);
+    }
+}
+
+fn drain_controls(
+    app: &mut Switcher,
+    qh: &QueueHandle<Switcher>,
+    control_rx: &std::sync::mpsc::Receiver<SwitcherControl>,
+) {
+    while let Ok(msg) = control_rx.try_recv() {
+        app.handle_control(msg, qh);
+    }
+}
+
+fn drain_wake_pipe(wake: &mut UnixStream) {
+    let mut buf = [0u8; 64];
+    loop {
+        match wake.read(&mut buf) {
+            Ok(0) => break,
+            Ok(_) => continue,
+            Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => break,
+            Err(_) => break,
+        }
+    }
+}
+
+fn poll_wayland_and_wake(wayland_fd: i32, wake_fd: i32) -> Result<(bool, bool)> {
+    let mut fds = [
+        libc::pollfd {
+            fd: wayland_fd,
+            events: libc::POLLIN,
+            revents: 0,
+        },
+        libc::pollfd {
+            fd: wake_fd,
+            events: libc::POLLIN,
+            revents: 0,
+        },
+    ];
+
+    loop {
+        let rc = unsafe { libc::poll(fds.as_mut_ptr(), fds.len() as libc::nfds_t, -1) };
+        if rc < 0 {
+            let err = std::io::Error::last_os_error();
+            if err.kind() == std::io::ErrorKind::Interrupted {
+                continue;
+            }
+            return Err(err).context("poll");
+        }
+        let wayland_ready = fds[0].revents & libc::POLLIN != 0;
+        let wake_ready = fds[1].revents & libc::POLLIN != 0;
+        return Ok((wayland_ready, wake_ready));
     }
 }
 

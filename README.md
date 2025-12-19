@@ -1,6 +1,6 @@
 # witcher
 
-Alt+Tab window switcher for Wayland with a daemon + evdev capture.
+Alt+Tab window switcher for Wayland with a daemon and compositor keybinds.
 
 ## Build
 
@@ -26,19 +26,39 @@ witcher --daemon --backend niri
 
 Supported backends: `niri`, `hyprland`
 
-## Permissions (evdev)
-
-The daemon reads `/dev/input/event*` to detect Alt+Tab globally.
-
-Add your user to the input group and re-login:
+Trigger the switcher from your compositor keybinding:
 
 ```bash
-sudo usermod -aG input $USER
+witcher --show
+```
+
+Reverse cycle:
+
+```bash
+witcher --show-prev
+```
+
+Example keybinds:
+
+Niri (`~/.config/niri/config.kdl`):
+
+```
+binds {
+    Alt+Tab { spawn "witcher" "--show" }
+    Alt+Shift+Tab { spawn "witcher" "--show-prev" }
+}
+```
+
+Hyprland (`~/.config/hypr/hyprland.conf`):
+
+```
+bind = ALT, Tab, exec, witcher --show
+bind = ALT SHIFT, Tab, exec, witcher --show-prev
 ```
 
 ## Notes
 
-- For niri, remove any Alt+Tab binds so the compositor does not consume Tab events.
+- For niri, ensure Alt+Tab binds run `witcher --show` so the compositor consumes the key.
 - The daemon must be running before Alt+Tab will work.
 
 ## Niri autostart example

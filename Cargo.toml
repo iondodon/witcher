@@ -7,7 +7,7 @@ edition = "2024"
 anyhow = "1.0"
 freedesktop-icons = "0.2"
 image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
-evdev = "0.12"
+libc = "0.2"
 niri-ipc = "=0.1.10"
 resvg = "0.42"
 serde = { version = "1.0", features = ["derive"] }

@@ -8,7 +8,7 @@ mod types;
 
 use anyhow::Result;
 
-use crate::daemon::run_daemon;
+use crate::daemon::{run_daemon, send_show, send_show_prev};
 use crate::types::BackendKind;
 
 fn parse_backend_required(args: &[String]) -> Result<BackendKind> {
@@ -32,6 +32,14 @@ fn parse_backend_required(args: &[String]) -> Result<BackendKind> {
 
 fn main() -> Result<()> {
     let args = std::env::args().skip(1).collect::<Vec<_>>();
+    if args.iter().any(|arg| arg == "--show") {
+        send_show()?;
+        return Ok(());
+    }
+    if args.iter().any(|arg| arg == "--show-prev") {
+        send_show_prev()?;
+        return Ok(());
+    }
     if args.iter().any(|arg| arg == "--daemon") {
         let backend = parse_backend_required(&args)?;
         run_daemon(backend)?;
@@ -39,7 +47,7 @@ fn main() -> Result<()> {
     }
 
     eprintln!(
-        "Usage: witcher --daemon --backend <name>\nSupported backends: niri, hyprland\nNote: evdev requires /dev/input access; add your user to the input group and re-login:\n  sudo usermod -aG input $USER"
+        "Usage: witcher --daemon --backend <name>\n       witcher --show\n       witcher --show-prev\nSupported backends: niri, hyprland"
     );
     Ok(())
 }
