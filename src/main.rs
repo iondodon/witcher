@@ -32,11 +32,11 @@ fn parse_backend_required(args: &[String]) -> Result<BackendKind> {
 
 fn main() -> Result<()> {
     let args = std::env::args().skip(1).collect::<Vec<_>>();
-    if args.iter().any(|arg| arg == "--show") {
+    if args.iter().any(|arg| arg == "--cycle-next") {
         send_show()?;
         return Ok(());
     }
-    if args.iter().any(|arg| arg == "--show-prev") {
+    if args.iter().any(|arg| arg == "--cycle-prev") {
         send_show_prev()?;
         return Ok(());
     }
@@ -47,7 +47,7 @@ fn main() -> Result<()> {
     }
 
     eprintln!(
-        "Usage: witcher --daemon --backend <name>\n       witcher --show\n       witcher --show-prev\nSupported backends: niri, hyprland"
+        "Usage: witcher --daemon --backend <name>\n       witcher --cycle-next\n       witcher --cycle-prev\nSupported backends: niri, hyprland"
     );
     Ok(())
 }
