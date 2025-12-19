@@ -58,7 +58,7 @@ bind = ALT SHIFT, Tab, exec, witcher --cycle-prev
 
 ## Notes
 
-- For niri, ensure Alt+Tab binds run `witcher --cycle-next` so the compositor consumes the key.
+- Ensure Alt+Tab binds run `witcher --cycle-next` so the compositor consumes the key.
 - The daemon must be running before Alt+Tab will work.
 
 ## Niri autostart example
