@@ -43,11 +43,11 @@ use wayland_client::{
     Connection, QueueHandle,
 };
 
-const ICON_SIZE: u32 = 64;
-const ICON_SPACING: u32 = 18;
-const PANEL_PADDING: u32 = 22;
-const HIGHLIGHT_PADDING: u32 = 10;
-const CORNER_RADIUS: f32 = 16.0;
+const ICON_SIZE: u32 = 77;
+const ICON_SPACING: u32 = 22;
+const PANEL_PADDING: u32 = 26;
+const HIGHLIGHT_PADDING: u32 = 12;
+const CORNER_RADIUS: f32 = 19.2;
 
 #[derive(Clone, Copy, Debug)]
 enum BackendKind {
@@ -373,12 +373,17 @@ impl Switcher {
             pixmap.fill_path(&background, &paint, tiny_skia::FillRule::Winding, transform, None);
 
             let item_size = ICON_SIZE + HIGHLIGHT_PADDING * 2;
+            let total_width = self.windows.len() as i32 * item_size as i32
+                + (self.windows.len().saturating_sub(1) as i32 * ICON_SPACING as i32);
+            let available = self.width as i32 - (PANEL_PADDING as i32 * 2);
+            let start_x = (PANEL_PADDING as i32 + ((available - total_width) / 2)).max(0);
             let y = self.height as i32 / 2 - (ICON_SIZE / 2) as i32;
             for (idx, window) in self.windows.iter().enumerate() {
-                let x = PANEL_PADDING as i32 + idx as i32 * (item_size + ICON_SPACING) as i32;
+                let item_x = start_x + idx as i32 * (item_size + ICON_SPACING) as i32;
+                let icon_x = item_x + HIGHLIGHT_PADDING as i32;
                 if idx == self.selected {
                     let highlight = rounded_rect_path(
-                        (x - HIGHLIGHT_PADDING as i32) as f32,
+                        item_x as f32,
                         (y - HIGHLIGHT_PADDING as i32) as f32,
                         item_size as f32,
                         item_size as f32,
@@ -395,7 +400,6 @@ impl Switcher {
                     );
                 }
 
-                let icon_x = x as i32;
                 let icon_y = y as i32;
                 let paint = PixmapPaint::default();
                 pixmap.draw_pixmap(
@@ -541,14 +545,9 @@ impl LayerShellHandler for Switcher {
         _conn: &Connection,
         qh: &QueueHandle<Self>,
         _layer: &LayerSurface,
-        configure: LayerSurfaceConfigure,
+        _configure: LayerSurfaceConfigure,
         _serial: u32,
     ) {
-        if configure.new_size.0 != 0 && configure.new_size.1 != 0 {
-            self.width = configure.new_size.0;
-            self.height = configure.new_size.1;
-        }
-
         self.apply_layout();
 
         if self.first_configure {
@@ -741,8 +740,9 @@ fn layout_size(count: usize, icon_size: u32) -> (u32, u32) {
     if count == 0 {
         return (0, 0);
     }
-    let width = PANEL_PADDING * 2 + count as u32 * icon_size + (count as u32 - 1) * ICON_SPACING;
-    let height = PANEL_PADDING * 2 + icon_size;
+    let item_size = icon_size + HIGHLIGHT_PADDING * 2;
+    let width = PANEL_PADDING * 2 + count as u32 * item_size + (count as u32 - 1) * ICON_SPACING;
+    let height = PANEL_PADDING * 2 + item_size;
     (width, height)
 }
 
