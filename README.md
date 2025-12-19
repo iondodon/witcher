@@ -2,6 +2,8 @@
 
 Alt+Tab window switcher for Wayland with a daemon and compositor keybinds.
 
+![Screenshot](screenshot.png)
+
 ## Build
 
 ```bash
