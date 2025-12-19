@@ -8,14 +8,20 @@ Alt+Tab window switcher for Wayland with a daemon + evdev capture.
 cargo build --release
 ```
 
-Binary: `/home/ion/nwitcher/target/release/witcher`
+Binary: `/target/release/witcher`
+
+## Installing
+
+```bash
+cargo install --path .
+```
 
 ## Run
 
 Start the daemon (required):
 
 ```bash
-/home/ion/nwitcher/target/release/witcher --daemon --backend niri
+witcher --daemon --backend niri
 ```
 
 Supported backends: `niri`, `hyprland`
@@ -40,5 +46,5 @@ sudo usermod -aG input $USER
 In `~/.config/niri/config.kdl`:
 
 ```
-spawn-at-startup "/home/ion/nwitcher/target/release/witcher" "--daemon" "--backend" "niri"
+spawn-at-startup "witcher" "--daemon" "--backend" "niri"
 ```
