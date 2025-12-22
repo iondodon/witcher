@@ -2,7 +2,9 @@
 
 Alt+Tab window switcher for Wayland with a daemon and compositor keybinds.
 
-![Screenshot](screenshot.png)
+<p align="center">
+  <img src="screenshot.png" alt="Withcer screenshot" width="900">
+</p>
 
 ## Build
 
