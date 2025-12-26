@@ -33,7 +33,8 @@ use wayland_client::{
 
 use crate::backend::{backend_windows, focus_window, focused_output_info};
 use crate::config::{
-    BORDER_WIDTH, CORNER_RADIUS, HIGHLIGHT_PADDING, ICON_SIZE, ICON_SPACING, PANEL_PADDING,
+    panel_opacity_alpha, BORDER_WIDTH, CORNER_RADIUS, HIGHLIGHT_PADDING, ICON_SIZE, ICON_SPACING,
+    PANEL_PADDING,
 };
 use crate::icon::IconCache;
 use crate::mru::MruState;
@@ -225,8 +226,9 @@ impl Switcher {
                 self.height as f32,
                 CORNER_RADIUS,
             );
+            let panel_alpha = panel_opacity_alpha();
             let mut paint = Paint::default();
-            paint.set_color(Color::from_rgba8(255, 255, 255, 36));
+            paint.set_color(Color::from_rgba8(36, 36, 36, panel_alpha));
             pixmap.fill_path(&outer, &paint, tiny_skia::FillRule::Winding, transform, None);
 
             let inset = BORDER_WIDTH.max(0.0);
@@ -239,7 +241,7 @@ impl Switcher {
                 inner_height,
                 (CORNER_RADIUS - inset).max(0.0),
             );
-            paint.set_color(Color::from_rgba8(20, 20, 20, 220));
+            paint.set_color(Color::from_rgba8(17, 17, 17, panel_alpha));
             pixmap.fill_path(&inner, &paint, tiny_skia::FillRule::Winding, transform, None);
 
         let item_size = ICON_SIZE + HIGHLIGHT_PADDING * 2;
@@ -263,8 +265,8 @@ impl Switcher {
                     CORNER_RADIUS * 0.7,
                 );
                 let mut paint = Paint::default();
-                let alpha = if is_selected { 36 } else { 20 };
-                paint.set_color(Color::from_rgba8(255, 255, 255, alpha));
+                let shade = if is_selected { 36 } else { 20 };
+                paint.set_color(Color::from_rgba8(shade, shade, shade, panel_alpha));
                 pixmap.fill_path(
                     &highlight,
                     &paint,
