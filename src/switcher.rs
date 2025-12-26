@@ -24,7 +24,7 @@ use std::collections::HashSet;
 use std::io::Read;
 use std::os::fd::{AsFd, AsRawFd};
 use std::os::unix::net::UnixStream;
-use tiny_skia::{Color, Paint, PathBuilder, PixmapMut, PixmapPaint, Transform};
+use tiny_skia::{Color, Paint, PathBuilder, PixmapMut, PixmapPaint, Stroke, Transform};
 use wayland_client::{
     globals::registry_queue_init,
     protocol::{wl_keyboard, wl_output, wl_pointer, wl_seat, wl_shm, wl_surface},
@@ -264,17 +264,27 @@ impl Switcher {
                     item_size as f32,
                     CORNER_RADIUS * 0.7,
                 );
-                let mut paint = Paint::default();
-                let shade = if is_selected { 36 } else { 20 };
-                paint.set_color(Color::from_rgba8(shade, shade, shade, panel_alpha));
-                pixmap.fill_path(
-                    &highlight,
-                    &paint,
-                    tiny_skia::FillRule::Winding,
-                    transform,
+                if is_selected {
+                    let mut paint = Paint::default();
+                    let shade = 56;
+                    paint.set_color(Color::from_rgba8(shade, shade, shade, 255));
+                    pixmap.fill_path(
+                        &highlight,
+                        &paint,
+                        tiny_skia::FillRule::Winding,
+                        transform,
                         None,
                     );
                 }
+                if is_hovered {
+                    let mut paint = Paint::default();
+                    let shade = if is_selected { 54 } else { 72 };
+                    paint.set_color(Color::from_rgba8(shade, shade, shade, panel_alpha));
+                    let mut stroke = Stroke::default();
+                    stroke.width = BORDER_WIDTH.max(1.0);
+                    pixmap.stroke_path(&highlight, &paint, &stroke, transform, None);
+                }
+            }
 
                 let icon_y = y as i32;
                 let paint = PixmapPaint::default();
