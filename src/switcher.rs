@@ -606,9 +606,8 @@ impl KeyboardHandler for Switcher {
         if self.canceled {
             return;
         }
-        let was_alt = self.modifiers.alt;
         self.modifiers = modifiers;
-        if was_alt && !modifiers.alt {
+        if !modifiers.alt {
             self.finalize();
         }
     }
