@@ -60,8 +60,11 @@ fn load_icon(app_id: &str) -> Result<Pixmap> {
 
 fn pixmap_from_image(image: DynamicImage) -> Pixmap {
     let rgba = image.to_rgba8();
-    let size = IntSize::from_wh(rgba.width(), rgba.height()).expect("icon size");
-    Pixmap::from_vec(rgba.into_raw(), size).expect("pixmap from image")
+    let (width, height) = rgba.dimensions();
+    let mut bytes = rgba.into_raw();
+    premultiply_alpha(&mut bytes);
+    let size = IntSize::from_wh(width, height).expect("icon size");
+    Pixmap::from_vec(bytes, size).expect("pixmap from image")
 }
 
 fn placeholder_icon(size: u32) -> Pixmap {
@@ -75,6 +78,27 @@ fn placeholder_icon(size: u32) -> Pixmap {
         None,
     );
     pixmap
+}
+
+fn premultiply_alpha(bytes: &mut [u8]) {
+    for pixel in bytes.chunks_exact_mut(4) {
+        let a = pixel[3] as u16;
+        if a == 0 {
+            pixel[0] = 0;
+            pixel[1] = 0;
+            pixel[2] = 0;
+            continue;
+        }
+        if a == 255 {
+            continue;
+        }
+        let r = (pixel[0] as u16 * a + 127) / 255;
+        let g = (pixel[1] as u16 * a + 127) / 255;
+        let b = (pixel[2] as u16 * a + 127) / 255;
+        pixel[0] = r as u8;
+        pixel[1] = g as u8;
+        pixel[2] = b as u8;
+    }
 }
 
 fn render_svg(path: &Path, size: u32) -> Result<Pixmap> {
