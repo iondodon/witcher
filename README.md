@@ -25,7 +25,7 @@ cargo install --path .
 Start the daemon (required):
 
 ```bash
-witcher --daemon --backend niri
+~/.cargo/bin/witcher --daemon --backend niri
 ```
 
 Supported backends: `niri`, `hyprland`
@@ -33,13 +33,13 @@ Supported backends: `niri`, `hyprland`
 Trigger the switcher from your compositor keybinding:
 
 ```bash
-witcher --cycle-next
+~/.cargo/bin/witcher --cycle-next
 ```
 
 Reverse cycle:
 
 ```bash
-witcher --cycle-prev
+~/.cargo/bin/witcher --cycle-prev
 ```
 
 Example keybinds:
@@ -48,21 +48,21 @@ Niri (`~/.config/niri/config.kdl`):
 
 ```
 binds {
-    Alt+Tab { spawn "witcher" "--cycle-next" }
-    Alt+Shift+Tab { spawn "witcher" "--cycle-prev" }
+    Alt+Tab { spawn "~/.cargo/bin/witcher" "--cycle-next" }
+    Alt+Shift+Tab { spawn "~/.cargo/bin/witcher" "--cycle-prev" }
 }
 ```
 
 Hyprland (`~/.config/hypr/hyprland.conf`):
 
 ```
-bind = ALT, Tab, exec, witcher --cycle-next
-bind = ALT SHIFT, Tab, exec, witcher --cycle-prev
+bind = ALT, Tab, exec, ~/.cargo/bin/witcher --cycle-next
+bind = ALT SHIFT, Tab, exec, ~/.cargo/bin/witcher --cycle-prev
 ```
 
 ## Notes
 
-- Ensure Alt+Tab binds run `witcher --cycle-next` so the compositor consumes the key.
+- Ensure Alt+Tab binds run `~/.cargo/bin/witcher --cycle-next` so the compositor consumes the key.
 - The daemon must be running before Alt+Tab will work.
 
 ## Niri autostart example
@@ -70,5 +70,5 @@ bind = ALT SHIFT, Tab, exec, witcher --cycle-prev
 In `~/.config/niri/config.kdl`:
 
 ```
-spawn-at-startup "witcher" "--daemon" "--backend" "niri"
+spawn-at-startup "~/.cargo/bin/witcher" "--daemon" "--backend" "niri"
 ```
