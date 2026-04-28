@@ -41,8 +41,9 @@ use wayland_protocols::ext::background_effect::v1::client::{
 
 use crate::backend::{backend_windows, focus_window, focused_output_info};
 use crate::config::{
-    panel_opacity_alpha, selected_indicator_alpha, selected_indicator_border_alpha, BORDER_WIDTH,
-    CORNER_RADIUS, HIGHLIGHT_PADDING, ICON_SIZE, ICON_SPACING, INDICATOR_BORDER_WIDTH,
+    panel_border_alpha, panel_opacity_alpha, selected_indicator_alpha,
+    selected_indicator_border_alpha, BORDER_WIDTH, CORNER_RADIUS, HIGHLIGHT_PADDING, ICON_SIZE,
+    ICON_SPACING, INDICATOR_BORDER_WIDTH,
     PANEL_PADDING,
 };
 use crate::icon::IconCache;
@@ -287,7 +288,7 @@ impl Switcher {
             );
             let panel_alpha = panel_opacity_alpha();
             let mut paint = Paint::default();
-            paint.set_color(Color::from_rgba8(36, 36, 36, 255));
+            paint.set_color(Color::from_rgba8(36, 36, 36, panel_border_alpha()));
             pixmap.fill_path(&outer, &paint, tiny_skia::FillRule::Winding, transform, None);
 
             let inset = BORDER_WIDTH.max(0.0);

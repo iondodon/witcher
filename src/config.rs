@@ -7,7 +7,8 @@ pub const BORDER_WIDTH: f32 = 2.0;
 pub const INDICATOR_BORDER_WIDTH: f32 = 2.0;
 pub const PANEL_OPACITY: f32 = 0.55;
 pub const SELECTED_INDICATOR_OPACITY: f32 = 0.45;
-pub const SELECTED_INDICATOR_BORDER_OPACITY: f32 = 0.8;
+pub const PANEL_BORDER_OPACITY: f32 = 0.65;
+pub const SELECTED_INDICATOR_BORDER_OPACITY: f32 = 0.65;
 
 pub const fn opacity_alpha(value: f32) -> u8 {
     let clamped = if value < 0.0 {
@@ -26,6 +27,10 @@ pub const fn panel_opacity_alpha() -> u8 {
 
 pub const fn selected_indicator_alpha() -> u8 {
     opacity_alpha(SELECTED_INDICATOR_OPACITY)
+}
+
+pub const fn panel_border_alpha() -> u8 {
+    opacity_alpha(PANEL_BORDER_OPACITY)
 }
 
 pub const fn selected_indicator_border_alpha() -> u8 {
