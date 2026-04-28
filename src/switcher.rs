@@ -1,6 +1,6 @@
 use anyhow::{Context, Result};
 use smithay_client_toolkit::{
-    compositor::{CompositorHandler, CompositorState},
+    compositor::{CompositorHandler, CompositorState, Region},
     delegate_compositor, delegate_keyboard, delegate_layer, delegate_output, delegate_pointer,
     delegate_registry, delegate_seat, delegate_shm,
     output::{OutputHandler, OutputState},
@@ -24,11 +24,16 @@ use std::collections::HashSet;
 use std::io::Read;
 use std::os::fd::{AsFd, AsRawFd};
 use std::os::unix::net::UnixStream;
-use tiny_skia::{Color, Paint, PathBuilder, PixmapMut, PixmapPaint, Stroke, Transform};
+use tiny_skia::{BlendMode, Color, Paint, PathBuilder, PixmapMut, PixmapPaint, Stroke, Transform};
 use wayland_client::{
-    globals::registry_queue_init,
+    delegate_noop,
+    globals::{registry_queue_init, GlobalList},
     protocol::{wl_keyboard, wl_output, wl_pointer, wl_seat, wl_shm, wl_surface},
     Connection, QueueHandle,
+};
+use wayland_protocols::ext::background_effect::v1::client::{
+    ext_background_effect_manager_v1::ExtBackgroundEffectManagerV1,
+    ext_background_effect_surface_v1::ExtBackgroundEffectSurfaceV1,
 };
 
 use crate::backend::{backend_windows, focus_window, focused_output_info};
@@ -87,6 +92,16 @@ pub fn run_switcher(
     if initial_scale > 1 {
         layer.wl_surface().set_buffer_scale(initial_scale as i32);
     }
+    let background_effect = create_background_effect(
+        &globals,
+        &qh,
+        &compositor,
+        layer.wl_surface(),
+        desired_width,
+        desired_height,
+        CORNER_RADIUS,
+        BORDER_WIDTH,
+    );
     layer.commit();
 
     let pool = SlotPool::new((desired_width * desired_height * 4) as usize, &shm)
@@ -104,6 +119,7 @@ pub fn run_switcher(
         height: desired_height,
         buffer_scale: initial_scale,
         output_logical_size: initial_output_size,
+        _background_effect: background_effect,
         first_configure: true,
         exit: false,
         keyboard: None,
@@ -171,6 +187,7 @@ struct Switcher {
     height: u32,
     buffer_scale: u32,
     output_logical_size: Option<(i32, i32)>,
+    _background_effect: Option<BackgroundEffect>,
     first_configure: bool,
     exit: bool,
     keyboard: Option<wl_keyboard::WlKeyboard>,
@@ -182,6 +199,11 @@ struct Switcher {
     redraw: bool,
     finalized: bool,
     canceled: bool,
+}
+
+struct BackgroundEffect {
+    _manager: ExtBackgroundEffectManagerV1,
+    _surface: ExtBackgroundEffectSurfaceV1,
 }
 
 impl Switcher {
@@ -228,7 +250,7 @@ impl Switcher {
             );
             let panel_alpha = panel_opacity_alpha();
             let mut paint = Paint::default();
-            paint.set_color(Color::from_rgba8(36, 36, 36, panel_alpha));
+            paint.set_color(Color::from_rgba8(36, 36, 36, 255));
             pixmap.fill_path(&outer, &paint, tiny_skia::FillRule::Winding, transform, None);
 
             let inset = BORDER_WIDTH.max(0.0);
@@ -242,7 +264,9 @@ impl Switcher {
                 (CORNER_RADIUS - inset).max(0.0),
             );
             paint.set_color(Color::from_rgba8(17, 17, 17, panel_alpha));
+            paint.blend_mode = BlendMode::Source;
             pixmap.fill_path(&inner, &paint, tiny_skia::FillRule::Winding, transform, None);
+            paint.blend_mode = BlendMode::SourceOver;
 
         let item_size = ICON_SIZE + HIGHLIGHT_PADDING * 2;
         let total_width = self.windows.len() as i32 * item_size as i32
@@ -677,6 +701,8 @@ delegate_keyboard!(Switcher);
 delegate_pointer!(Switcher);
 delegate_layer!(Switcher);
 delegate_registry!(Switcher);
+delegate_noop!(Switcher: ignore ExtBackgroundEffectManagerV1);
+delegate_noop!(Switcher: ExtBackgroundEffectSurfaceV1);
 
 impl ProvidesRegistryState for Switcher {
     fn registry(&mut self) -> &mut RegistryState {
@@ -715,6 +741,77 @@ fn load_windows(backend: BackendKind, icon_cache: &mut IconCache) -> Result<Vec<
         });
     }
     Ok(entries)
+}
+
+fn create_background_effect(
+    globals: &GlobalList,
+    qh: &QueueHandle<Switcher>,
+    compositor: &CompositorState,
+    surface: &wl_surface::WlSurface,
+    width: u32,
+    height: u32,
+    radius: f32,
+    border_width: f32,
+) -> Option<BackgroundEffect> {
+    let manager = globals
+        .bind::<ExtBackgroundEffectManagerV1, _, _>(qh, 1..=1, ())
+        .ok()?;
+    let effect = manager.get_background_effect(surface, qh, ());
+    let region = Region::new(compositor).ok()?;
+    let inset = (border_width.max(0.0).ceil() as i32 - 1).max(0);
+    add_rounded_rect_region(
+        &region,
+        inset,
+        inset,
+        width as i32 - inset * 2,
+        height as i32 - inset * 2,
+        (radius - inset as f32).max(0.0),
+    );
+    effect.set_blur_region(Some(region.wl_region()));
+
+    Some(BackgroundEffect {
+        _manager: manager,
+        _surface: effect,
+    })
+}
+
+fn add_rounded_rect_region(
+    region: &Region,
+    x: i32,
+    y: i32,
+    width: i32,
+    height: i32,
+    radius: f32,
+) {
+    if width <= 0 || height <= 0 {
+        return;
+    }
+
+    let radius = radius.max(0.0).min(width as f32 / 2.0).min(height as f32 / 2.0);
+    let rows = radius.ceil() as i32;
+    if rows == 0 {
+        region.add(x, y, width, height);
+        return;
+    }
+
+    let middle_height = height - rows * 2;
+    if middle_height > 0 {
+        region.add(x, y + rows, width, middle_height);
+    }
+
+    for row in 0..rows {
+        let sample_y = row as f32 + 0.5;
+        let dy = radius - sample_y;
+        let dx = (radius * radius - dy * dy).max(0.0).sqrt();
+        let inset = (radius - dx).floor().max(0.0) as i32;
+        let span_width = width - inset * 2;
+        if span_width <= 0 {
+            continue;
+        }
+
+        region.add(x + inset, y + row, span_width, 1);
+        region.add(x + inset, y + height - row - 1, span_width, 1);
+    }
 }
 
 fn swizzle_rgba_to_bgra(bytes: &mut [u8]) {
