@@ -9,7 +9,7 @@ use std::{
 };
 use tiny_skia::{Color, IntSize, Paint, Pixmap, Transform};
 
-use crate::config::ICON_SIZE;
+use crate::config::icon_size;
 
 #[derive(Default)]
 pub struct IconCache {
@@ -21,7 +21,7 @@ impl IconCache {
         if let Some(icon) = self.icons.get(app_id) {
             return icon.clone();
         }
-        let icon = load_icon(app_id).unwrap_or_else(|_| placeholder_icon(ICON_SIZE));
+        let icon = load_icon(app_id).unwrap_or_else(|_| placeholder_icon(icon_size()));
         let icon = Arc::new(icon);
         self.icons.insert(app_id.to_string(), icon.clone());
         icon
@@ -29,7 +29,7 @@ impl IconCache {
 }
 
 fn load_icon(app_id: &str) -> Result<Pixmap> {
-    let icon_size = ICON_SIZE;
+    let icon_size = icon_size();
     let mut candidates = Vec::new();
     candidates.push(app_id.to_string());
     if let Some(trimmed) = app_id.strip_suffix(".desktop") {

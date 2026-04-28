@@ -31,6 +31,8 @@ fn parse_backend_required(args: &[String]) -> Result<BackendKind> {
 }
 
 fn main() -> Result<()> {
+    config::init();
+
     let args = std::env::args().skip(1).collect::<Vec<_>>();
     if args.iter().any(|arg| arg == "--cycle-next") {
         send_show()?;

@@ -60,6 +60,26 @@ bind = ALT, Tab, exec, ~/.cargo/bin/witcher --cycle-next
 bind = ALT SHIFT, Tab, exec, ~/.cargo/bin/witcher --cycle-prev
 ```
 
+## Config
+
+In `~/.config/witcher/config.json`
+
+```json
+{
+  "icon_size": 77,
+  "icon_spacing": 22,
+  "panel_padding": 14,
+  "highlight_padding": 24,
+  "corner_radius": 19.2,
+  "border_width": 2.0,
+  "indicator_border_width": 2.0,
+  "panel_opacity": 0.55,
+  "selected_indicator_opacity": 0.45,
+  "panel_border_opacity": 0.65,
+  "selected_indicator_border_opacity": 0.65
+}
+```
+
 ## Notes
 
 - Ensure Alt+Tab binds run `~/.cargo/bin/witcher --cycle-next` so the compositor consumes the key.

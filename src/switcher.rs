@@ -7,18 +7,18 @@ use smithay_client_toolkit::{
     registry::{ProvidesRegistryState, RegistryState},
     registry_handlers,
     seat::{
-        keyboard::{KeyEvent, KeyboardHandler, Keysym, Modifiers},
-        pointer::{PointerEvent, PointerEventKind, PointerHandler, BTN_LEFT},
         Capability, SeatHandler, SeatState,
+        keyboard::{KeyEvent, KeyboardHandler, Keysym, Modifiers},
+        pointer::{BTN_LEFT, PointerEvent, PointerEventKind, PointerHandler},
     },
     shell::{
+        WaylandSurface,
         wlr_layer::{
             Anchor, KeyboardInteractivity, Layer, LayerShell, LayerShellHandler, LayerSurface,
             LayerSurfaceConfigure,
         },
-        WaylandSurface,
     },
-    shm::{slot::SlotPool, Shm, ShmHandler},
+    shm::{Shm, ShmHandler, slot::SlotPool},
     subcompositor::SubcompositorState,
 };
 use std::collections::HashSet;
@@ -27,12 +27,9 @@ use std::os::fd::{AsFd, AsRawFd};
 use std::os::unix::net::UnixStream;
 use tiny_skia::{BlendMode, Color, Paint, PathBuilder, PixmapMut, PixmapPaint, Stroke, Transform};
 use wayland_client::{
-    delegate_noop,
-    globals::{registry_queue_init, GlobalList},
-    protocol::{
-        wl_keyboard, wl_output, wl_pointer, wl_seat, wl_shm, wl_subsurface, wl_surface,
-    },
-    Connection, QueueHandle,
+    Connection, QueueHandle, delegate_noop,
+    globals::{GlobalList, registry_queue_init},
+    protocol::{wl_keyboard, wl_output, wl_pointer, wl_seat, wl_shm, wl_subsurface, wl_surface},
 };
 use wayland_protocols::ext::background_effect::v1::client::{
     ext_background_effect_manager_v1::ExtBackgroundEffectManagerV1,
@@ -41,10 +38,8 @@ use wayland_protocols::ext::background_effect::v1::client::{
 
 use crate::backend::{backend_windows, focus_window, focused_output_info};
 use crate::config::{
-    panel_border_alpha, panel_opacity_alpha, selected_indicator_alpha,
-    selected_indicator_border_alpha, BORDER_WIDTH, CORNER_RADIUS, HIGHLIGHT_PADDING, ICON_SIZE,
-    ICON_SPACING, INDICATOR_BORDER_WIDTH,
-    PANEL_PADDING,
+    app_config, panel_border_alpha, panel_opacity_alpha, selected_indicator_alpha,
+    selected_indicator_border_alpha,
 };
 use crate::icon::IconCache;
 use crate::mru::MruState;
@@ -74,7 +69,8 @@ pub fn run_switcher(
     windows = mru.order_windows(windows);
 
     let selected = if windows.len() > 1 { 1 } else { 0 };
-    let icon_size = ICON_SIZE;
+    let config = *app_config();
+    let icon_size = config.icon_size;
     let (desired_width, desired_height) = layout_size(windows.len(), icon_size);
     let (initial_output_size, initial_scale) = focused_output_info(backend).unwrap_or((None, 1));
 
@@ -83,13 +79,13 @@ pub fn run_switcher(
         registry_queue_init::<Switcher>(&conn).context("init registry")?;
     let qh = event_queue.handle();
 
-    let compositor =
-        CompositorState::bind(&globals, &qh).context("wl_compositor not available")?;
+    let compositor = CompositorState::bind(&globals, &qh).context("wl_compositor not available")?;
     let layer_shell = LayerShell::bind(&globals, &qh).context("layer shell not available")?;
     let shm = Shm::bind(&globals, &qh).context("wl_shm not available")?;
 
     let surface = compositor.create_surface(&qh);
-    let layer = layer_shell.create_layer_surface(&qh, surface, Layer::Overlay, Some("witcher"), None);
+    let layer =
+        layer_shell.create_layer_surface(&qh, surface, Layer::Overlay, Some("witcher"), None);
     layer.set_anchor(Anchor::TOP | Anchor::LEFT);
     layer.set_keyboard_interactivity(KeyboardInteractivity::Exclusive);
     layer.set_exclusive_zone(-1);
@@ -104,8 +100,8 @@ pub fn run_switcher(
         layer.wl_surface(),
         desired_width,
         desired_height,
-        CORNER_RADIUS,
-        BORDER_WIDTH,
+        config.corner_radius,
+        config.border_width,
     );
     let subcompositor =
         SubcompositorState::bind(compositor.wl_compositor().clone(), &globals, &qh).ok();
@@ -116,7 +112,7 @@ pub fn run_switcher(
             &compositor,
             subcompositor,
             layer.wl_surface(),
-            icon_size + HIGHLIGHT_PADDING * 2,
+            icon_size + config.highlight_padding * 2,
             initial_scale,
         )
     });
@@ -244,6 +240,7 @@ impl Switcher {
     }
 
     fn draw(&mut self, qh: &QueueHandle<Self>) {
+        let config = *app_config();
         let buffer_width = self.width * self.buffer_scale;
         let buffer_height = self.height * self.buffer_scale;
         let stride = buffer_width as i32 * 4;
@@ -273,25 +270,31 @@ impl Switcher {
             .expect("create buffer");
 
         {
-            let mut pixmap =
-                PixmapMut::from_bytes(canvas.as_mut(), buffer_width, buffer_height)
-                    .expect("pixmap from buffer");
+            let mut pixmap = PixmapMut::from_bytes(canvas.as_mut(), buffer_width, buffer_height)
+                .expect("pixmap from buffer");
             pixmap.fill(Color::from_rgba8(0, 0, 0, 0));
 
-            let transform = Transform::from_scale(self.buffer_scale as f32, self.buffer_scale as f32);
+            let transform =
+                Transform::from_scale(self.buffer_scale as f32, self.buffer_scale as f32);
             let outer = rounded_rect_path(
                 0.0,
                 0.0,
                 self.width as f32,
                 self.height as f32,
-                CORNER_RADIUS,
+                config.corner_radius,
             );
             let panel_alpha = panel_opacity_alpha();
             let mut paint = Paint::default();
             paint.set_color(Color::from_rgba8(36, 36, 36, panel_border_alpha()));
-            pixmap.fill_path(&outer, &paint, tiny_skia::FillRule::Winding, transform, None);
+            pixmap.fill_path(
+                &outer,
+                &paint,
+                tiny_skia::FillRule::Winding,
+                transform,
+                None,
+            );
 
-            let inset = BORDER_WIDTH.max(0.0);
+            let inset = config.border_width.max(0.0);
             let inner_width = (self.width as f32 - inset * 2.0).max(0.0);
             let inner_height = (self.height as f32 - inset * 2.0).max(0.0);
             let inner = rounded_rect_path(
@@ -299,68 +302,74 @@ impl Switcher {
                 inset,
                 inner_width,
                 inner_height,
-                (CORNER_RADIUS - inset).max(0.0),
+                (config.corner_radius - inset).max(0.0),
             );
             paint.set_color(Color::from_rgba8(17, 17, 17, panel_alpha));
             paint.blend_mode = BlendMode::Source;
-            pixmap.fill_path(&inner, &paint, tiny_skia::FillRule::Winding, transform, None);
+            pixmap.fill_path(
+                &inner,
+                &paint,
+                tiny_skia::FillRule::Winding,
+                transform,
+                None,
+            );
             paint.blend_mode = BlendMode::SourceOver;
 
-        let item_size = ICON_SIZE + HIGHLIGHT_PADDING * 2;
-        let total_width = self.windows.len() as i32 * item_size as i32
-            + (self.windows.len().saturating_sub(1) as i32 * ICON_SPACING as i32);
-        let available = self.width as i32 - (PANEL_PADDING as i32 * 2);
-        let start_x = (PANEL_PADDING as i32 + ((available - total_width) / 2)).max(0);
-        let y = self.height as i32 / 2 - (ICON_SIZE / 2) as i32;
-        let hover_y = y - HIGHLIGHT_PADDING as i32;
-        for (idx, window) in self.windows.iter().enumerate() {
-            let item_x = start_x + idx as i32 * (item_size + ICON_SPACING) as i32;
-            let icon_x = item_x + HIGHLIGHT_PADDING as i32;
-            let is_selected = idx == self.selected;
-            let is_hovered = self.hovered == Some(idx);
-            if is_selected || is_hovered {
-                let highlight = rounded_rect_path(
-                    item_x as f32,
-                    hover_y as f32,
-                    item_size as f32,
-                    item_size as f32,
-                    CORNER_RADIUS * 0.7,
-                );
-                if is_selected && !selected_on_child {
-                    let mut paint = Paint::default();
-                    let shade = 56;
-                    paint.set_color(Color::from_rgba8(
-                        shade,
-                        shade,
-                        shade,
-                        selected_indicator_alpha(),
-                    ));
-                    pixmap.fill_path(
-                        &highlight,
-                        &paint,
-                        tiny_skia::FillRule::Winding,
-                        transform,
-                        None,
+            let item_size = config.icon_size + config.highlight_padding * 2;
+            let total_width = self.windows.len() as i32 * item_size as i32
+                + (self.windows.len().saturating_sub(1) as i32 * config.icon_spacing as i32);
+            let available = self.width as i32 - (config.panel_padding as i32 * 2);
+            let start_x = (config.panel_padding as i32 + ((available - total_width) / 2)).max(0);
+            let y = self.height as i32 / 2 - (config.icon_size / 2) as i32;
+            let hover_y = y - config.highlight_padding as i32;
+            for (idx, window) in self.windows.iter().enumerate() {
+                let item_x = start_x + idx as i32 * (item_size + config.icon_spacing) as i32;
+                let icon_x = item_x + config.highlight_padding as i32;
+                let is_selected = idx == self.selected;
+                let is_hovered = self.hovered == Some(idx);
+                if is_selected || is_hovered {
+                    let highlight = rounded_rect_path(
+                        item_x as f32,
+                        hover_y as f32,
+                        item_size as f32,
+                        item_size as f32,
+                        config.corner_radius * 0.7,
                     );
+                    if is_selected && !selected_on_child {
+                        let mut paint = Paint::default();
+                        let shade = 56;
+                        paint.set_color(Color::from_rgba8(
+                            shade,
+                            shade,
+                            shade,
+                            selected_indicator_alpha(),
+                        ));
+                        pixmap.fill_path(
+                            &highlight,
+                            &paint,
+                            tiny_skia::FillRule::Winding,
+                            transform,
+                            None,
+                        );
+                    }
+                    if is_hovered || is_selected {
+                        let mut paint = Paint::default();
+                        let shade = if is_selected { 54 } else { 72 };
+                        let alpha = if is_selected {
+                            selected_indicator_border_alpha()
+                        } else {
+                            panel_alpha
+                        };
+                        paint.set_color(Color::from_rgba8(shade, shade, shade, alpha));
+                        let mut stroke = Stroke::default();
+                        stroke.width = config.indicator_border_width.max(1.0);
+                        pixmap.stroke_path(&highlight, &paint, &stroke, transform, None);
+                    }
                 }
-                if is_hovered || is_selected {
-                    let mut paint = Paint::default();
-                    let shade = if is_selected { 54 } else { 72 };
-                    let alpha = if is_selected {
-                        selected_indicator_border_alpha()
-                    } else {
-                        panel_alpha
-                    };
-                    paint.set_color(Color::from_rgba8(shade, shade, shade, alpha));
-                    let mut stroke = Stroke::default();
-                    stroke.width = INDICATOR_BORDER_WIDTH.max(1.0);
-                    pixmap.stroke_path(&highlight, &paint, &stroke, transform, None);
-                }
-            }
 
-            if is_selected && selected_on_child {
-                continue;
-            }
+                if is_selected && selected_on_child {
+                    continue;
+                }
 
                 let icon_y = y as i32;
                 let paint = PixmapPaint::default();
@@ -386,13 +395,20 @@ impl Switcher {
         self.layer
             .wl_surface()
             .frame(qh, self.layer.wl_surface().clone());
-        buffer.attach_to(self.layer.wl_surface()).expect("buffer attach");
+        buffer
+            .attach_to(self.layer.wl_surface())
+            .expect("buffer attach");
         self.layer.commit();
         self.redraw = false;
     }
 
     fn draw_selected_indicator(&mut self) {
-        let Some(icon) = self.windows.get(self.selected).map(|window| window.icon.clone()) else {
+        let config = *app_config();
+        let Some(icon) = self
+            .windows
+            .get(self.selected)
+            .map(|window| window.icon.clone())
+        else {
             return;
         };
         let Some((item_x, item_y)) = self.selected_indicator_position() else {
@@ -426,7 +442,7 @@ impl Switcher {
                 0.0,
                 indicator.size as f32,
                 indicator.size as f32,
-                CORNER_RADIUS * 0.7,
+                config.corner_radius * 0.7,
             );
 
             let mut paint = Paint::default();
@@ -453,13 +469,13 @@ impl Switcher {
                 selected_indicator_border_alpha(),
             ));
             let mut stroke = Stroke::default();
-            stroke.width = INDICATOR_BORDER_WIDTH.max(1.0);
+            stroke.width = config.indicator_border_width.max(1.0);
             pixmap.stroke_path(&highlight, &paint, &stroke, transform, None);
 
             let pixmap_paint = PixmapPaint::default();
             pixmap.draw_pixmap(
-                HIGHLIGHT_PADDING as i32,
-                HIGHLIGHT_PADDING as i32,
+                config.highlight_padding as i32,
+                config.highlight_padding as i32,
                 icon.as_ref().as_ref(),
                 &pixmap_paint,
                 transform,
@@ -473,7 +489,9 @@ impl Switcher {
         indicator
             .surface
             .damage_buffer(0, 0, buffer_size as i32, buffer_size as i32);
-        buffer.attach_to(&indicator.surface).expect("selected indicator buffer attach");
+        buffer
+            .attach_to(&indicator.surface)
+            .expect("selected indicator buffer attach");
         indicator.surface.commit();
     }
 
@@ -481,14 +499,15 @@ impl Switcher {
         if self.windows.is_empty() {
             return None;
         }
-        let item_size = ICON_SIZE + HIGHLIGHT_PADDING * 2;
+        let config = *app_config();
+        let item_size = config.icon_size + config.highlight_padding * 2;
         let total_width = self.windows.len() as i32 * item_size as i32
-            + (self.windows.len().saturating_sub(1) as i32 * ICON_SPACING as i32);
-        let available = self.width as i32 - (PANEL_PADDING as i32 * 2);
-        let start_x = (PANEL_PADDING as i32 + ((available - total_width) / 2)).max(0);
-        let y = self.height as i32 / 2 - (ICON_SIZE / 2) as i32;
-        let hover_y = y - HIGHLIGHT_PADDING as i32;
-        let item_x = start_x + self.selected as i32 * (item_size + ICON_SPACING) as i32;
+            + (self.windows.len().saturating_sub(1) as i32 * config.icon_spacing as i32);
+        let available = self.width as i32 - (config.panel_padding as i32 * 2);
+        let start_x = (config.panel_padding as i32 + ((available - total_width) / 2)).max(0);
+        let y = self.height as i32 / 2 - (config.icon_size / 2) as i32;
+        let hover_y = y - config.highlight_padding as i32;
+        let item_x = start_x + self.selected as i32 * (item_size + config.icon_spacing) as i32;
         Some((item_x, hover_y))
     }
 
@@ -532,22 +551,24 @@ impl Switcher {
         if self.windows.is_empty() {
             return None;
         }
+        let config = *app_config();
         let (x, y) = position;
-        let item_size = (ICON_SIZE + HIGHLIGHT_PADDING * 2) as f64;
+        let item_size = (config.icon_size + config.highlight_padding * 2) as f64;
         let total_width = self.windows.len() as f64 * item_size
-            + (self.windows.len().saturating_sub(1) as f64 * ICON_SPACING as f64);
-        let available = self.width as f64 - (PANEL_PADDING as f64 * 2.0);
-        let start_x = (PANEL_PADDING as f64 + ((available - total_width) / 2.0)).max(0.0);
-        let y_top = (self.height as f64 / 2.0) - (ICON_SIZE as f64 / 2.0)
-            - HIGHLIGHT_PADDING as f64;
+            + (self.windows.len().saturating_sub(1) as f64 * config.icon_spacing as f64);
+        let available = self.width as f64 - (config.panel_padding as f64 * 2.0);
+        let start_x = (config.panel_padding as f64 + ((available - total_width) / 2.0)).max(0.0);
+        let y_top = (self.height as f64 / 2.0)
+            - (config.icon_size as f64 / 2.0)
+            - config.highlight_padding as f64;
         if y < y_top || y > y_top + item_size {
             return None;
         }
-        let idx = ((x - start_x) / (item_size + ICON_SPACING as f64)).floor() as i32;
+        let idx = ((x - start_x) / (item_size + config.icon_spacing as f64)).floor() as i32;
         if idx < 0 || idx as usize >= self.windows.len() {
             return None;
         }
-        let item_x = start_x + idx as f64 * (item_size + ICON_SPACING as f64);
+        let item_x = start_x + idx as f64 * (item_size + config.icon_spacing as f64);
         if x < item_x || x > item_x + item_size {
             return None;
         }
@@ -610,9 +631,20 @@ impl OutputHandler for Switcher {
         &mut self.output_state
     }
 
-    fn new_output(&mut self, _conn: &Connection, _qh: &QueueHandle<Self>, _output: wl_output::WlOutput) {}
+    fn new_output(
+        &mut self,
+        _conn: &Connection,
+        _qh: &QueueHandle<Self>,
+        _output: wl_output::WlOutput,
+    ) {
+    }
 
-    fn update_output(&mut self, _conn: &Connection, _qh: &QueueHandle<Self>, output: wl_output::WlOutput) {
+    fn update_output(
+        &mut self,
+        _conn: &Connection,
+        _qh: &QueueHandle<Self>,
+        output: wl_output::WlOutput,
+    ) {
         if let Some(info) = self.output_state.info(&output) {
             if let Some(size) = info.logical_size {
                 self.output_logical_size = Some(size);
@@ -628,7 +660,13 @@ impl OutputHandler for Switcher {
         }
     }
 
-    fn output_destroyed(&mut self, _conn: &Connection, _qh: &QueueHandle<Self>, _output: wl_output::WlOutput) {}
+    fn output_destroyed(
+        &mut self,
+        _conn: &Connection,
+        _qh: &QueueHandle<Self>,
+        _output: wl_output::WlOutput,
+    ) {
+    }
 }
 
 impl LayerShellHandler for Switcher {
@@ -676,7 +714,10 @@ impl SeatHandler for Switcher {
             self.keyboard = Some(keyboard);
         }
         if capability == Capability::Pointer && self.pointer.is_none() {
-            let pointer = self.seat_state.get_pointer(qh, &seat).expect("create pointer");
+            let pointer = self
+                .seat_state
+                .get_pointer(qh, &seat)
+                .expect("create pointer");
             self.pointer = Some(pointer);
         }
     }
@@ -700,7 +741,8 @@ impl SeatHandler for Switcher {
         }
     }
 
-    fn remove_seat(&mut self, _conn: &Connection, _qh: &QueueHandle<Self>, _seat: wl_seat::WlSeat) {}
+    fn remove_seat(&mut self, _conn: &Connection, _qh: &QueueHandle<Self>, _seat: wl_seat::WlSeat) {
+    }
 }
 
 impl KeyboardHandler for Switcher {
@@ -873,9 +915,12 @@ fn layout_size(count: usize, icon_size: u32) -> (u32, u32) {
     if count == 0 {
         return (0, 0);
     }
-    let item_size = icon_size + HIGHLIGHT_PADDING * 2;
-    let width = PANEL_PADDING * 2 + count as u32 * item_size + (count as u32 - 1) * ICON_SPACING;
-    let height = PANEL_PADDING * 2 + item_size;
+    let config = *app_config();
+    let item_size = icon_size + config.highlight_padding * 2;
+    let width = config.panel_padding * 2
+        + count as u32 * item_size
+        + (count as u32 - 1) * config.icon_spacing;
+    let height = config.panel_padding * 2 + item_size;
     (width, height)
 }
 
@@ -941,6 +986,7 @@ fn create_selected_indicator(
     size: u32,
     buffer_scale: u32,
 ) -> SelectedIndicator {
+    let config = *app_config();
     let (subsurface, surface) = subcompositor.create_subsurface(parent.clone(), qh);
     subsurface.set_sync();
     subsurface.place_above(parent);
@@ -959,8 +1005,8 @@ fn create_selected_indicator(
         &surface,
         size,
         size,
-        CORNER_RADIUS * 0.7,
-        (INDICATOR_BORDER_WIDTH - 1.0).max(0.0),
+        config.corner_radius * 0.7,
+        (config.indicator_border_width - 1.0).max(0.0),
     );
 
     SelectedIndicator {
@@ -971,19 +1017,15 @@ fn create_selected_indicator(
     }
 }
 
-fn add_rounded_rect_region(
-    region: &Region,
-    x: i32,
-    y: i32,
-    width: i32,
-    height: i32,
-    radius: f32,
-) {
+fn add_rounded_rect_region(region: &Region, x: i32, y: i32, width: i32, height: i32, radius: f32) {
     if width <= 0 || height <= 0 {
         return;
     }
 
-    let radius = radius.max(0.0).min(width as f32 / 2.0).min(height as f32 / 2.0);
+    let radius = radius
+        .max(0.0)
+        .min(width as f32 / 2.0)
+        .min(height as f32 / 2.0);
     let rows = radius.ceil() as i32;
     if rows == 0 {
         region.add(x, y, width, height);
