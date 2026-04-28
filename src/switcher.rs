@@ -2,7 +2,7 @@ use anyhow::{Context, Result};
 use smithay_client_toolkit::{
     compositor::{CompositorHandler, CompositorState, Region},
     delegate_compositor, delegate_keyboard, delegate_layer, delegate_output, delegate_pointer,
-    delegate_registry, delegate_seat, delegate_shm,
+    delegate_registry, delegate_seat, delegate_shm, delegate_subcompositor,
     output::{OutputHandler, OutputState},
     registry::{ProvidesRegistryState, RegistryState},
     registry_handlers,
@@ -19,6 +19,7 @@ use smithay_client_toolkit::{
         WaylandSurface,
     },
     shm::{slot::SlotPool, Shm, ShmHandler},
+    subcompositor::SubcompositorState,
 };
 use std::collections::HashSet;
 use std::io::Read;
@@ -28,7 +29,9 @@ use tiny_skia::{BlendMode, Color, Paint, PathBuilder, PixmapMut, PixmapPaint, St
 use wayland_client::{
     delegate_noop,
     globals::{registry_queue_init, GlobalList},
-    protocol::{wl_keyboard, wl_output, wl_pointer, wl_seat, wl_shm, wl_surface},
+    protocol::{
+        wl_keyboard, wl_output, wl_pointer, wl_seat, wl_shm, wl_subsurface, wl_surface,
+    },
     Connection, QueueHandle,
 };
 use wayland_protocols::ext::background_effect::v1::client::{
@@ -38,7 +41,8 @@ use wayland_protocols::ext::background_effect::v1::client::{
 
 use crate::backend::{backend_windows, focus_window, focused_output_info};
 use crate::config::{
-    panel_opacity_alpha, BORDER_WIDTH, CORNER_RADIUS, HIGHLIGHT_PADDING, ICON_SIZE, ICON_SPACING,
+    panel_opacity_alpha, selected_indicator_alpha, selected_indicator_border_alpha, BORDER_WIDTH,
+    CORNER_RADIUS, HIGHLIGHT_PADDING, ICON_SIZE, ICON_SPACING, INDICATOR_BORDER_WIDTH,
     PANEL_PADDING,
 };
 use crate::icon::IconCache;
@@ -102,6 +106,19 @@ pub fn run_switcher(
         CORNER_RADIUS,
         BORDER_WIDTH,
     );
+    let subcompositor =
+        SubcompositorState::bind(compositor.wl_compositor().clone(), &globals, &qh).ok();
+    let selected_indicator = subcompositor.as_ref().map(|subcompositor| {
+        create_selected_indicator(
+            &globals,
+            &qh,
+            &compositor,
+            subcompositor,
+            layer.wl_surface(),
+            icon_size + HIGHLIGHT_PADDING * 2,
+            initial_scale,
+        )
+    });
     layer.commit();
 
     let pool = SlotPool::new((desired_width * desired_height * 4) as usize, &shm)
@@ -120,6 +137,8 @@ pub fn run_switcher(
         buffer_scale: initial_scale,
         output_logical_size: initial_output_size,
         _background_effect: background_effect,
+        _subcompositor: subcompositor,
+        selected_indicator,
         first_configure: true,
         exit: false,
         keyboard: None,
@@ -188,6 +207,8 @@ struct Switcher {
     buffer_scale: u32,
     output_logical_size: Option<(i32, i32)>,
     _background_effect: Option<BackgroundEffect>,
+    _subcompositor: Option<SubcompositorState>,
+    selected_indicator: Option<SelectedIndicator>,
     first_configure: bool,
     exit: bool,
     keyboard: Option<wl_keyboard::WlKeyboard>,
@@ -206,6 +227,13 @@ struct BackgroundEffect {
     _surface: ExtBackgroundEffectSurfaceV1,
 }
 
+struct SelectedIndicator {
+    subsurface: wl_subsurface::WlSubsurface,
+    surface: wl_surface::WlSurface,
+    _background_effect: Option<BackgroundEffect>,
+    size: u32,
+}
+
 impl Switcher {
     fn handle_control(&mut self, msg: SwitcherControl, qh: &QueueHandle<Self>) {
         match msg {
@@ -218,8 +246,17 @@ impl Switcher {
         let buffer_width = self.width * self.buffer_scale;
         let buffer_height = self.height * self.buffer_scale;
         let stride = buffer_width as i32 * 4;
+        let selected_on_child = self.selected_indicator.is_some();
+        let selected_indicator_bytes = self
+            .selected_indicator
+            .as_ref()
+            .map(|indicator| {
+                let size = indicator.size * self.buffer_scale;
+                (size * size * 4) as usize
+            })
+            .unwrap_or(0);
 
-        let needed = (buffer_width * buffer_height * 4) as usize;
+        let needed = (buffer_width * buffer_height * 4) as usize + selected_indicator_bytes;
         if self.pool.len() < needed {
             self.pool.resize(needed).expect("resize shm pool");
         }
@@ -288,10 +325,15 @@ impl Switcher {
                     item_size as f32,
                     CORNER_RADIUS * 0.7,
                 );
-                if is_selected {
+                if is_selected && !selected_on_child {
                     let mut paint = Paint::default();
                     let shade = 56;
-                    paint.set_color(Color::from_rgba8(shade, shade, shade, 255));
+                    paint.set_color(Color::from_rgba8(
+                        shade,
+                        shade,
+                        shade,
+                        selected_indicator_alpha(),
+                    ));
                     pixmap.fill_path(
                         &highlight,
                         &paint,
@@ -300,14 +342,23 @@ impl Switcher {
                         None,
                     );
                 }
-                if is_hovered {
+                if is_hovered || is_selected {
                     let mut paint = Paint::default();
                     let shade = if is_selected { 54 } else { 72 };
-                    paint.set_color(Color::from_rgba8(shade, shade, shade, panel_alpha));
+                    let alpha = if is_selected {
+                        selected_indicator_border_alpha()
+                    } else {
+                        panel_alpha
+                    };
+                    paint.set_color(Color::from_rgba8(shade, shade, shade, alpha));
                     let mut stroke = Stroke::default();
-                    stroke.width = BORDER_WIDTH.max(1.0);
+                    stroke.width = INDICATOR_BORDER_WIDTH.max(1.0);
                     pixmap.stroke_path(&highlight, &paint, &stroke, transform, None);
                 }
+            }
+
+            if is_selected && selected_on_child {
+                continue;
             }
 
                 let icon_y = y as i32;
@@ -324,6 +375,9 @@ impl Switcher {
         }
 
         swizzle_rgba_to_bgra(canvas.as_mut());
+        if selected_on_child {
+            self.draw_selected_indicator();
+        }
 
         self.layer
             .wl_surface()
@@ -334,6 +388,107 @@ impl Switcher {
         buffer.attach_to(self.layer.wl_surface()).expect("buffer attach");
         self.layer.commit();
         self.redraw = false;
+    }
+
+    fn draw_selected_indicator(&mut self) {
+        let Some(icon) = self.windows.get(self.selected).map(|window| window.icon.clone()) else {
+            return;
+        };
+        let Some((item_x, item_y)) = self.selected_indicator_position() else {
+            return;
+        };
+        let Some(indicator) = self.selected_indicator.as_mut() else {
+            return;
+        };
+
+        let buffer_size = indicator.size * self.buffer_scale;
+        let stride = buffer_size as i32 * 4;
+        let (buffer, canvas) = self
+            .pool
+            .create_buffer(
+                buffer_size as i32,
+                buffer_size as i32,
+                stride,
+                wl_shm::Format::Argb8888,
+            )
+            .expect("create selected indicator buffer");
+
+        {
+            let mut pixmap = PixmapMut::from_bytes(canvas.as_mut(), buffer_size, buffer_size)
+                .expect("selected indicator pixmap from buffer");
+            pixmap.fill(Color::from_rgba8(0, 0, 0, 0));
+
+            let transform =
+                Transform::from_scale(self.buffer_scale as f32, self.buffer_scale as f32);
+            let highlight = rounded_rect_path(
+                0.0,
+                0.0,
+                indicator.size as f32,
+                indicator.size as f32,
+                CORNER_RADIUS * 0.7,
+            );
+
+            let mut paint = Paint::default();
+            let shade = 56;
+            paint.set_color(Color::from_rgba8(
+                shade,
+                shade,
+                shade,
+                selected_indicator_alpha(),
+            ));
+            pixmap.fill_path(
+                &highlight,
+                &paint,
+                tiny_skia::FillRule::Winding,
+                transform,
+                None,
+            );
+
+            let shade = 54;
+            paint.set_color(Color::from_rgba8(
+                shade,
+                shade,
+                shade,
+                selected_indicator_border_alpha(),
+            ));
+            let mut stroke = Stroke::default();
+            stroke.width = INDICATOR_BORDER_WIDTH.max(1.0);
+            pixmap.stroke_path(&highlight, &paint, &stroke, transform, None);
+
+            let pixmap_paint = PixmapPaint::default();
+            pixmap.draw_pixmap(
+                HIGHLIGHT_PADDING as i32,
+                HIGHLIGHT_PADDING as i32,
+                icon.as_ref().as_ref(),
+                &pixmap_paint,
+                transform,
+                None,
+            );
+        }
+
+        swizzle_rgba_to_bgra(canvas.as_mut());
+        indicator.subsurface.set_position(item_x, item_y);
+        indicator.surface.set_buffer_scale(self.buffer_scale as i32);
+        indicator
+            .surface
+            .damage_buffer(0, 0, buffer_size as i32, buffer_size as i32);
+        buffer.attach_to(&indicator.surface).expect("selected indicator buffer attach");
+        indicator.surface.commit();
+    }
+
+    fn selected_indicator_position(&self) -> Option<(i32, i32)> {
+        if self.windows.is_empty() {
+            return None;
+        }
+        let item_size = ICON_SIZE + HIGHLIGHT_PADDING * 2;
+        let total_width = self.windows.len() as i32 * item_size as i32
+            + (self.windows.len().saturating_sub(1) as i32 * ICON_SPACING as i32);
+        let available = self.width as i32 - (PANEL_PADDING as i32 * 2);
+        let start_x = (PANEL_PADDING as i32 + ((available - total_width) / 2)).max(0);
+        let y = self.height as i32 / 2 - (ICON_SIZE / 2) as i32;
+        let hover_y = y - HIGHLIGHT_PADDING as i32;
+        let item_x = start_x + self.selected as i32 * (item_size + ICON_SPACING) as i32;
+        Some((item_x, hover_y))
     }
 
     fn cycle(&mut self, delta: i32, qh: &QueueHandle<Self>) {
@@ -701,6 +856,7 @@ delegate_keyboard!(Switcher);
 delegate_pointer!(Switcher);
 delegate_layer!(Switcher);
 delegate_registry!(Switcher);
+delegate_subcompositor!(Switcher);
 delegate_noop!(Switcher: ignore ExtBackgroundEffectManagerV1);
 delegate_noop!(Switcher: ExtBackgroundEffectSurfaceV1);
 
@@ -773,6 +929,45 @@ fn create_background_effect(
         _manager: manager,
         _surface: effect,
     })
+}
+
+fn create_selected_indicator(
+    globals: &GlobalList,
+    qh: &QueueHandle<Switcher>,
+    compositor: &CompositorState,
+    subcompositor: &SubcompositorState,
+    parent: &wl_surface::WlSurface,
+    size: u32,
+    buffer_scale: u32,
+) -> SelectedIndicator {
+    let (subsurface, surface) = subcompositor.create_subsurface(parent.clone(), qh);
+    subsurface.set_sync();
+    subsurface.place_above(parent);
+    if buffer_scale > 1 {
+        surface.set_buffer_scale(buffer_scale as i32);
+    }
+
+    if let Ok(region) = Region::new(compositor) {
+        surface.set_input_region(Some(region.wl_region()));
+    }
+
+    let background_effect = create_background_effect(
+        globals,
+        qh,
+        compositor,
+        &surface,
+        size,
+        size,
+        CORNER_RADIUS * 0.7,
+        (INDICATOR_BORDER_WIDTH - 1.0).max(0.0),
+    );
+
+    SelectedIndicator {
+        subsurface,
+        surface,
+        _background_effect: background_effect,
+        size,
+    }
 }
 
 fn add_rounded_rect_region(
