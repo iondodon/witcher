@@ -62,22 +62,28 @@ bind = ALT SHIFT, Tab, exec, ~/.cargo/bin/witcher --cycle-prev
 
 ## Config
 
-In `~/.config/witcher/config.json`
+Witcher reads configuration from:
 
-```json
-{
-  "icon_size": 77,
-  "icon_spacing": 22,
-  "panel_padding": 14,
-  "highlight_padding": 24,
-  "corner_radius": 19.2,
-  "border_width": 2.0,
-  "indicator_border_width": 2.0,
-  "panel_opacity": 0.55,
-  "selected_indicator_opacity": 0.45,
-  "panel_border_opacity": 0.65,
-  "selected_indicator_border_opacity": 0.65
-}
+- `$XDG_CONFIG_HOME/witcher/config`
+- or `~/.config/witcher/config` if `XDG_CONFIG_HOME` is unset
+
+If the file does not exist, Witcher uses the built-in defaults.
+
+Format:
+
+```text
+# comments are allowed
+icon_size = 77
+icon_spacing = 22
+panel_padding = 14
+highlight_padding = 24
+corner_radius = 19.2
+border_width = 2.0
+indicator_border_width = 2.0
+panel_opacity = 0.55
+selected_indicator_opacity = 0.45
+panel_border_opacity = 0.65
+selected_indicator_border_opacity = 0.65
 ```
 
 ## Notes

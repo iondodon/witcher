@@ -1,4 +1,3 @@
-use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::sync::OnceLock;
 
@@ -14,7 +13,7 @@ pub const SELECTED_INDICATOR_OPACITY: f32 = 0.45;
 pub const PANEL_BORDER_OPACITY: f32 = 0.65;
 pub const SELECTED_INDICATOR_BORDER_OPACITY: f32 = 0.65;
 
-#[derive(Clone, Copy, Debug, Serialize)]
+#[derive(Clone, Copy, Debug)]
 pub struct AppConfig {
     pub icon_size: u32,
     pub icon_spacing: u32,
@@ -27,21 +26,6 @@ pub struct AppConfig {
     pub selected_indicator_opacity: f32,
     pub panel_border_opacity: f32,
     pub selected_indicator_border_opacity: f32,
-}
-
-#[derive(Debug, Default, Deserialize)]
-struct FileConfig {
-    icon_size: Option<u32>,
-    icon_spacing: Option<u32>,
-    panel_padding: Option<u32>,
-    highlight_padding: Option<u32>,
-    corner_radius: Option<f32>,
-    border_width: Option<f32>,
-    indicator_border_width: Option<f32>,
-    panel_opacity: Option<f32>,
-    selected_indicator_opacity: Option<f32>,
-    panel_border_opacity: Option<f32>,
-    selected_indicator_border_opacity: Option<f32>,
 }
 
 static CONFIG: OnceLock<AppConfig> = OnceLock::new();
@@ -65,41 +49,26 @@ impl Default for AppConfig {
 }
 
 impl AppConfig {
-    fn merge_file(mut self, file: FileConfig) -> Self {
-        if let Some(value) = file.icon_size {
-            self.icon_size = value;
+    fn apply(&mut self, key: &str, value: &str) -> Result<(), String> {
+        match key {
+            "icon_size" => self.icon_size = parse_u32(key, value)?,
+            "icon_spacing" => self.icon_spacing = parse_u32(key, value)?,
+            "panel_padding" => self.panel_padding = parse_u32(key, value)?,
+            "highlight_padding" => self.highlight_padding = parse_u32(key, value)?,
+            "corner_radius" => self.corner_radius = parse_f32(key, value)?,
+            "border_width" => self.border_width = parse_f32(key, value)?,
+            "indicator_border_width" => self.indicator_border_width = parse_f32(key, value)?,
+            "panel_opacity" => self.panel_opacity = parse_f32(key, value)?,
+            "selected_indicator_opacity" => {
+                self.selected_indicator_opacity = parse_f32(key, value)?
+            }
+            "panel_border_opacity" => self.panel_border_opacity = parse_f32(key, value)?,
+            "selected_indicator_border_opacity" => {
+                self.selected_indicator_border_opacity = parse_f32(key, value)?
+            }
+            _ => return Err(format!("unknown key `{key}`")),
         }
-        if let Some(value) = file.icon_spacing {
-            self.icon_spacing = value;
-        }
-        if let Some(value) = file.panel_padding {
-            self.panel_padding = value;
-        }
-        if let Some(value) = file.highlight_padding {
-            self.highlight_padding = value;
-        }
-        if let Some(value) = file.corner_radius {
-            self.corner_radius = value;
-        }
-        if let Some(value) = file.border_width {
-            self.border_width = value;
-        }
-        if let Some(value) = file.indicator_border_width {
-            self.indicator_border_width = value;
-        }
-        if let Some(value) = file.panel_opacity {
-            self.panel_opacity = value;
-        }
-        if let Some(value) = file.selected_indicator_opacity {
-            self.selected_indicator_opacity = value;
-        }
-        if let Some(value) = file.panel_border_opacity {
-            self.panel_border_opacity = value;
-        }
-        if let Some(value) = file.selected_indicator_border_opacity {
-            self.selected_indicator_border_opacity = value;
-        }
-        self
+        Ok(())
     }
 }
 
@@ -128,26 +97,53 @@ fn load() -> AppConfig {
         }
     };
 
-    match serde_json::from_str::<FileConfig>(&text) {
-        Ok(file_config) => AppConfig::default().merge_file(file_config),
-        Err(err) => {
-            eprintln!("witcher: failed to parse {}: {err}", path.display());
-            AppConfig::default()
+    let mut config = AppConfig::default();
+    for (idx, raw_line) in text.lines().enumerate() {
+        let line = raw_line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+
+        let Some((key, value)) = line.split_once('=') else {
+            eprintln!(
+                "witcher: failed to parse {}:{}: expected `key = value`",
+                path.display(),
+                idx + 1
+            );
+            continue;
+        };
+
+        if let Err(err) = config.apply(key.trim(), value.trim()) {
+            eprintln!(
+                "witcher: failed to parse {}:{}: {}",
+                path.display(),
+                idx + 1,
+                err
+            );
         }
     }
+    config
 }
 
 fn config_path() -> Option<PathBuf> {
     if let Some(config_home) = std::env::var_os("XDG_CONFIG_HOME") {
-        return Some(
-            PathBuf::from(config_home)
-                .join("witcher")
-                .join("config.json"),
-        );
+        return Some(PathBuf::from(config_home).join("witcher").join("config"));
     }
     std::env::var_os("HOME")
         .map(PathBuf::from)
-        .map(|home| home.join(".config").join("witcher").join("config.json"))
+        .map(|home| home.join(".config").join("witcher").join("config"))
+}
+
+fn parse_u32(key: &str, value: &str) -> Result<u32, String> {
+    value
+        .parse::<u32>()
+        .map_err(|err| format!("invalid value for `{key}`: {err}"))
+}
+
+fn parse_f32(key: &str, value: &str) -> Result<f32, String> {
+    value
+        .parse::<f32>()
+        .map_err(|err| format!("invalid value for `{key}`: {err}"))
 }
 
 pub fn opacity_alpha(value: f32) -> u8 {
