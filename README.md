@@ -81,13 +81,13 @@ corner_radius = 19.2
 border_width = 2.0
 indicator_border_width = 2.0
 panel_opacity = 0.33
-selected_indicator_opacity = 0.45
+selected_indicator_opacity = 0.60
 panel_border_opacity = 0.45
 selected_indicator_border_opacity = 0.45
 panel_background_color = 111111
 panel_border_color = 242424
 hover_border_color = 484848
-selected_indicator_color = 383838
+selected_indicator_color = 2c2c2c
 selected_indicator_border_color = 363636
 placeholder_icon_color = 5a5a5a
 ```

@@ -16,7 +16,7 @@ pub const CORNER_RADIUS: f32 = 19.2;
 pub const BORDER_WIDTH: f32 = 2.0;
 pub const INDICATOR_BORDER_WIDTH: f32 = 2.0;
 pub const PANEL_OPACITY: f32 = 0.33;
-pub const SELECTED_INDICATOR_OPACITY: f32 = 0.45;
+pub const SELECTED_INDICATOR_OPACITY: f32 = 0.60;
 pub const PANEL_BORDER_OPACITY: f32 = 0.45;
 pub const SELECTED_INDICATOR_BORDER_OPACITY: f32 = 0.45;
 pub const PANEL_BACKGROUND_COLOR: Rgb = Rgb {
@@ -35,9 +35,9 @@ pub const HOVER_BORDER_COLOR: Rgb = Rgb {
     b: 72,
 };
 pub const SELECTED_INDICATOR_COLOR: Rgb = Rgb {
-    r: 56,
-    g: 56,
-    b: 56,
+    r: 44,
+    g: 44,
+    b: 44,
 };
 pub const SELECTED_INDICATOR_BORDER_COLOR: Rgb = Rgb {
     r: 54,
