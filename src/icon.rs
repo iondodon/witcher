@@ -9,7 +9,7 @@ use std::{
 };
 use tiny_skia::{Color, IntSize, Paint, Pixmap, Transform};
 
-use crate::config::icon_size;
+use crate::config::{app_config, icon_size};
 
 #[derive(Default)]
 pub struct IconCache {
@@ -70,7 +70,8 @@ fn pixmap_from_image(image: DynamicImage) -> Pixmap {
 fn placeholder_icon(size: u32) -> Pixmap {
     let mut pixmap = Pixmap::new(size, size).expect("placeholder pixmap");
     let mut paint = Paint::default();
-    paint.set_color(Color::from_rgba8(90, 90, 90, 255));
+    let color = app_config().placeholder_icon_color;
+    paint.set_color(Color::from_rgba8(color.r, color.g, color.b, 255));
     pixmap.fill_rect(
         tiny_skia::Rect::from_xywh(0.0, 0.0, size as f32, size as f32).unwrap(),
         &paint,

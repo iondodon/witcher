@@ -1,6 +1,13 @@
 use std::path::PathBuf;
 use std::sync::OnceLock;
 
+#[derive(Clone, Copy, Debug)]
+pub struct Rgb {
+    pub r: u8,
+    pub g: u8,
+    pub b: u8,
+}
+
 pub const ICON_SIZE: u32 = 77;
 pub const ICON_SPACING: u32 = 22;
 pub const PANEL_PADDING: u32 = 14;
@@ -8,10 +15,40 @@ pub const HIGHLIGHT_PADDING: u32 = 24;
 pub const CORNER_RADIUS: f32 = 19.2;
 pub const BORDER_WIDTH: f32 = 2.0;
 pub const INDICATOR_BORDER_WIDTH: f32 = 2.0;
-pub const PANEL_OPACITY: f32 = 0.55;
+pub const PANEL_OPACITY: f32 = 0.33;
 pub const SELECTED_INDICATOR_OPACITY: f32 = 0.45;
-pub const PANEL_BORDER_OPACITY: f32 = 0.65;
-pub const SELECTED_INDICATOR_BORDER_OPACITY: f32 = 0.65;
+pub const PANEL_BORDER_OPACITY: f32 = 0.45;
+pub const SELECTED_INDICATOR_BORDER_OPACITY: f32 = 0.45;
+pub const PANEL_BACKGROUND_COLOR: Rgb = Rgb {
+    r: 17,
+    g: 17,
+    b: 17,
+};
+pub const PANEL_BORDER_COLOR: Rgb = Rgb {
+    r: 36,
+    g: 36,
+    b: 36,
+};
+pub const HOVER_BORDER_COLOR: Rgb = Rgb {
+    r: 72,
+    g: 72,
+    b: 72,
+};
+pub const SELECTED_INDICATOR_COLOR: Rgb = Rgb {
+    r: 56,
+    g: 56,
+    b: 56,
+};
+pub const SELECTED_INDICATOR_BORDER_COLOR: Rgb = Rgb {
+    r: 54,
+    g: 54,
+    b: 54,
+};
+pub const PLACEHOLDER_ICON_COLOR: Rgb = Rgb {
+    r: 90,
+    g: 90,
+    b: 90,
+};
 
 #[derive(Clone, Copy, Debug)]
 pub struct AppConfig {
@@ -26,6 +63,12 @@ pub struct AppConfig {
     pub selected_indicator_opacity: f32,
     pub panel_border_opacity: f32,
     pub selected_indicator_border_opacity: f32,
+    pub panel_background_color: Rgb,
+    pub panel_border_color: Rgb,
+    pub hover_border_color: Rgb,
+    pub selected_indicator_color: Rgb,
+    pub selected_indicator_border_color: Rgb,
+    pub placeholder_icon_color: Rgb,
 }
 
 static CONFIG: OnceLock<AppConfig> = OnceLock::new();
@@ -44,6 +87,12 @@ impl Default for AppConfig {
             selected_indicator_opacity: SELECTED_INDICATOR_OPACITY,
             panel_border_opacity: PANEL_BORDER_OPACITY,
             selected_indicator_border_opacity: SELECTED_INDICATOR_BORDER_OPACITY,
+            panel_background_color: PANEL_BACKGROUND_COLOR,
+            panel_border_color: PANEL_BORDER_COLOR,
+            hover_border_color: HOVER_BORDER_COLOR,
+            selected_indicator_color: SELECTED_INDICATOR_COLOR,
+            selected_indicator_border_color: SELECTED_INDICATOR_BORDER_COLOR,
+            placeholder_icon_color: PLACEHOLDER_ICON_COLOR,
         }
     }
 }
@@ -66,6 +115,16 @@ impl AppConfig {
             "selected_indicator_border_opacity" => {
                 self.selected_indicator_border_opacity = parse_f32(key, value)?
             }
+            "panel_background_color" => self.panel_background_color = parse_rgb(key, value)?,
+            "panel_border_color" => self.panel_border_color = parse_rgb(key, value)?,
+            "hover_border_color" => self.hover_border_color = parse_rgb(key, value)?,
+            "selected_indicator_color" => {
+                self.selected_indicator_color = parse_rgb(key, value)?
+            }
+            "selected_indicator_border_color" => {
+                self.selected_indicator_border_color = parse_rgb(key, value)?
+            }
+            "placeholder_icon_color" => self.placeholder_icon_color = parse_rgb(key, value)?,
             _ => return Err(format!("unknown key `{key}`")),
         }
         Ok(())
@@ -144,6 +203,26 @@ fn parse_f32(key: &str, value: &str) -> Result<f32, String> {
     value
         .parse::<f32>()
         .map_err(|err| format!("invalid value for `{key}`: {err}"))
+}
+
+fn parse_rgb(key: &str, value: &str) -> Result<Rgb, String> {
+    let hex = value.trim().strip_prefix('#').unwrap_or(value.trim());
+    if hex.len() != 6 {
+        return Err(format!(
+            "invalid value for `{key}`: expected 6-digit hex color"
+        ));
+    }
+
+    let parse = |range: std::ops::Range<usize>| {
+        u8::from_str_radix(&hex[range], 16)
+            .map_err(|err| format!("invalid value for `{key}`: {err}"))
+    };
+
+    Ok(Rgb {
+        r: parse(0..2)?,
+        g: parse(2..4)?,
+        b: parse(4..6)?,
+    })
 }
 
 pub fn opacity_alpha(value: f32) -> u8 {

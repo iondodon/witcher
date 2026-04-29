@@ -285,7 +285,12 @@ impl Switcher {
             );
             let panel_alpha = panel_opacity_alpha();
             let mut paint = Paint::default();
-            paint.set_color(Color::from_rgba8(36, 36, 36, panel_border_alpha()));
+            paint.set_color(Color::from_rgba8(
+                config.panel_border_color.r,
+                config.panel_border_color.g,
+                config.panel_border_color.b,
+                panel_border_alpha(),
+            ));
             pixmap.fill_path(
                 &outer,
                 &paint,
@@ -304,7 +309,12 @@ impl Switcher {
                 inner_height,
                 (config.corner_radius - inset).max(0.0),
             );
-            paint.set_color(Color::from_rgba8(17, 17, 17, panel_alpha));
+            paint.set_color(Color::from_rgba8(
+                config.panel_background_color.r,
+                config.panel_background_color.g,
+                config.panel_background_color.b,
+                panel_alpha,
+            ));
             paint.blend_mode = BlendMode::Source;
             pixmap.fill_path(
                 &inner,
@@ -337,11 +347,10 @@ impl Switcher {
                     );
                     if is_selected && !selected_on_child {
                         let mut paint = Paint::default();
-                        let shade = 56;
                         paint.set_color(Color::from_rgba8(
-                            shade,
-                            shade,
-                            shade,
+                            config.selected_indicator_color.r,
+                            config.selected_indicator_color.g,
+                            config.selected_indicator_color.b,
                             selected_indicator_alpha(),
                         ));
                         pixmap.fill_path(
@@ -354,13 +363,17 @@ impl Switcher {
                     }
                     if is_hovered || is_selected {
                         let mut paint = Paint::default();
-                        let shade = if is_selected { 54 } else { 72 };
+                        let color = if is_selected {
+                            config.selected_indicator_border_color
+                        } else {
+                            config.hover_border_color
+                        };
                         let alpha = if is_selected {
                             selected_indicator_border_alpha()
                         } else {
                             panel_alpha
                         };
-                        paint.set_color(Color::from_rgba8(shade, shade, shade, alpha));
+                        paint.set_color(Color::from_rgba8(color.r, color.g, color.b, alpha));
                         let mut stroke = Stroke::default();
                         stroke.width = config.indicator_border_width.max(1.0);
                         pixmap.stroke_path(&highlight, &paint, &stroke, transform, None);
@@ -446,11 +459,10 @@ impl Switcher {
             );
 
             let mut paint = Paint::default();
-            let shade = 56;
             paint.set_color(Color::from_rgba8(
-                shade,
-                shade,
-                shade,
+                config.selected_indicator_color.r,
+                config.selected_indicator_color.g,
+                config.selected_indicator_color.b,
                 selected_indicator_alpha(),
             ));
             pixmap.fill_path(
@@ -461,11 +473,10 @@ impl Switcher {
                 None,
             );
 
-            let shade = 54;
             paint.set_color(Color::from_rgba8(
-                shade,
-                shade,
-                shade,
+                config.selected_indicator_border_color.r,
+                config.selected_indicator_border_color.g,
+                config.selected_indicator_border_color.b,
                 selected_indicator_border_alpha(),
             ));
             let mut stroke = Stroke::default();
