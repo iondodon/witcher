@@ -1,3 +1,5 @@
+⚠️ This app is Vibe Coded.
+
 # witcher
 
 Alt+Tab window switcher for Wayland with a daemon and compositor keybinds.
