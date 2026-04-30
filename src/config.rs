@@ -18,7 +18,9 @@ pub const INDICATOR_BORDER_WIDTH: f32 = 2.0;
 pub const PANEL_OPACITY: f32 = 0.33;
 pub const SELECTED_INDICATOR_OPACITY: f32 = 0.28;
 pub const PANEL_BORDER_OPACITY: f32 = 0.45;
+pub const PANEL_SHADOW_SIZE: f32 = 2.0;
 pub const SELECTED_INDICATOR_BORDER_OPACITY: f32 = 0.24;
+pub const SELECTED_INDICATOR_SHADOW_SIZE: f32 = 0.0;
 pub const PANEL_BACKGROUND_COLOR: Rgb = Rgb {
     r: 17,
     g: 17,
@@ -29,6 +31,7 @@ pub const PANEL_BORDER_COLOR: Rgb = Rgb {
     g: 36,
     b: 36,
 };
+pub const PANEL_SHADOW_COLOR: Rgb = Rgb { r: 0, g: 0, b: 0 };
 pub const HOVER_BORDER_COLOR: Rgb = Rgb {
     r: 72,
     g: 72,
@@ -62,9 +65,12 @@ pub struct AppConfig {
     pub panel_opacity: f32,
     pub selected_indicator_opacity: f32,
     pub panel_border_opacity: f32,
+    pub panel_shadow_size: f32,
     pub selected_indicator_border_opacity: f32,
+    pub selected_indicator_shadow_size: f32,
     pub panel_background_color: Rgb,
     pub panel_border_color: Rgb,
+    pub panel_shadow_color: Rgb,
     pub hover_border_color: Rgb,
     pub selected_indicator_color: Rgb,
     pub selected_indicator_border_color: Rgb,
@@ -86,9 +92,12 @@ impl Default for AppConfig {
             panel_opacity: PANEL_OPACITY,
             selected_indicator_opacity: SELECTED_INDICATOR_OPACITY,
             panel_border_opacity: PANEL_BORDER_OPACITY,
+            panel_shadow_size: PANEL_SHADOW_SIZE,
             selected_indicator_border_opacity: SELECTED_INDICATOR_BORDER_OPACITY,
+            selected_indicator_shadow_size: SELECTED_INDICATOR_SHADOW_SIZE,
             panel_background_color: PANEL_BACKGROUND_COLOR,
             panel_border_color: PANEL_BORDER_COLOR,
+            panel_shadow_color: PANEL_SHADOW_COLOR,
             hover_border_color: HOVER_BORDER_COLOR,
             selected_indicator_color: SELECTED_INDICATOR_COLOR,
             selected_indicator_border_color: SELECTED_INDICATOR_BORDER_COLOR,
@@ -112,11 +121,16 @@ impl AppConfig {
                 self.selected_indicator_opacity = parse_f32(key, value)?
             }
             "panel_border_opacity" => self.panel_border_opacity = parse_f32(key, value)?,
+            "panel_shadow_size" => self.panel_shadow_size = parse_f32(key, value)?,
             "selected_indicator_border_opacity" => {
                 self.selected_indicator_border_opacity = parse_f32(key, value)?
             }
+            "selected_indicator_shadow_size" => {
+                self.selected_indicator_shadow_size = parse_f32(key, value)?
+            }
             "panel_background_color" => self.panel_background_color = parse_rgb(key, value)?,
             "panel_border_color" => self.panel_border_color = parse_rgb(key, value)?,
+            "panel_shadow_color" => self.panel_shadow_color = parse_rgb(key, value)?,
             "hover_border_color" => self.hover_border_color = parse_rgb(key, value)?,
             "selected_indicator_color" => {
                 self.selected_indicator_color = parse_rgb(key, value)?

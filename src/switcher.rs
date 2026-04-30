@@ -105,6 +105,9 @@ pub fn run_switcher(
     );
     let subcompositor =
         SubcompositorState::bind(compositor.wl_compositor().clone(), &globals, &qh).ok();
+    let panel_shadow = subcompositor.as_ref().map(|subcompositor| {
+        create_panel_shadow(&qh, &compositor, subcompositor, layer.wl_surface(), initial_scale)
+    });
     let selected_indicator = subcompositor.as_ref().map(|subcompositor| {
         create_selected_indicator(
             &globals,
@@ -135,6 +138,7 @@ pub fn run_switcher(
         output_logical_size: initial_output_size,
         _background_effect: background_effect,
         _subcompositor: subcompositor,
+        panel_shadow,
         selected_indicator,
         first_configure: true,
         exit: false,
@@ -205,6 +209,7 @@ struct Switcher {
     output_logical_size: Option<(i32, i32)>,
     _background_effect: Option<BackgroundEffect>,
     _subcompositor: Option<SubcompositorState>,
+    panel_shadow: Option<PanelShadow>,
     selected_indicator: Option<SelectedIndicator>,
     first_configure: bool,
     exit: bool,
@@ -231,6 +236,12 @@ struct SelectedIndicator {
     size: u32,
 }
 
+struct PanelShadow {
+    subsurface: wl_subsurface::WlSubsurface,
+    surface: wl_surface::WlSurface,
+    spread: u32,
+}
+
 impl Switcher {
     fn handle_control(&mut self, msg: SwitcherControl, qh: &QueueHandle<Self>) {
         match msg {
@@ -245,6 +256,15 @@ impl Switcher {
         let buffer_height = self.height * self.buffer_scale;
         let stride = buffer_width as i32 * 4;
         let selected_on_child = self.selected_indicator.is_some();
+        let panel_shadow_bytes = self
+            .panel_shadow
+            .as_ref()
+            .map(|shadow| {
+                let width = (self.width + shadow.spread * 2) * self.buffer_scale;
+                let height = (self.height + shadow.spread * 2) * self.buffer_scale;
+                (width * height * 4) as usize
+            })
+            .unwrap_or(0);
         let selected_indicator_bytes = self
             .selected_indicator
             .as_ref()
@@ -254,7 +274,9 @@ impl Switcher {
             })
             .unwrap_or(0);
 
-        let needed = (buffer_width * buffer_height * 4) as usize + selected_indicator_bytes;
+        let needed = (buffer_width * buffer_height * 4) as usize
+            + panel_shadow_bytes
+            + selected_indicator_bytes;
         if self.pool.len() < needed {
             self.pool.resize(needed).expect("resize shm pool");
         }
@@ -345,6 +367,17 @@ impl Switcher {
                         item_size as f32,
                         config.corner_radius * 0.7,
                     );
+                    if is_selected {
+                        draw_selected_indicator_shadow(
+                            &mut pixmap,
+                            transform,
+                            item_x as f32,
+                            hover_y as f32,
+                            item_size as f32,
+                            config.corner_radius * 0.7,
+                            &config,
+                        );
+                    }
                     if is_selected && !selected_on_child {
                         let mut paint = Paint::default();
                         paint.set_color(Color::from_rgba8(
@@ -398,6 +431,7 @@ impl Switcher {
         }
 
         swizzle_rgba_to_bgra(canvas.as_mut());
+        self.draw_panel_shadow();
         if selected_on_child {
             self.draw_selected_indicator();
         }
@@ -504,6 +538,63 @@ impl Switcher {
             .attach_to(&indicator.surface)
             .expect("selected indicator buffer attach");
         indicator.surface.commit();
+    }
+
+    fn draw_panel_shadow(&mut self) {
+        let config = *app_config();
+        let Some(shadow) = self.panel_shadow.as_mut() else {
+            return;
+        };
+
+        let spread = shadow.spread;
+        let width = self.width + spread * 2;
+        let height = self.height + spread * 2;
+        let buffer_width = width * self.buffer_scale;
+        let buffer_height = height * self.buffer_scale;
+        let stride = buffer_width as i32 * 4;
+        let (buffer, canvas) = self
+            .pool
+            .create_buffer(
+                buffer_width as i32,
+                buffer_height as i32,
+                stride,
+                wl_shm::Format::Argb8888,
+            )
+            .expect("create panel shadow buffer");
+
+        {
+            let mut pixmap = PixmapMut::from_bytes(canvas.as_mut(), buffer_width, buffer_height)
+                .expect("panel shadow pixmap from buffer");
+            pixmap.fill(Color::from_rgba8(0, 0, 0, 0));
+
+            if spread > 0 && panel_border_alpha() > 0 {
+                let transform =
+                    Transform::from_scale(self.buffer_scale as f32, self.buffer_scale as f32);
+                draw_panel_shadow(
+                    &mut pixmap,
+                    transform,
+                    spread as f32,
+                    spread as f32,
+                    self.width as f32,
+                    self.height as f32,
+                    config.corner_radius,
+                    &config,
+                );
+            }
+        }
+
+        swizzle_rgba_to_bgra(canvas.as_mut());
+        shadow
+            .subsurface
+            .set_position(-(spread as i32), -(spread as i32));
+        shadow.surface.set_buffer_scale(self.buffer_scale as i32);
+        shadow
+            .surface
+            .damage_buffer(0, 0, buffer_width as i32, buffer_height as i32);
+        buffer
+            .attach_to(&shadow.surface)
+            .expect("panel shadow buffer attach");
+        shadow.surface.commit();
     }
 
     fn selected_indicator_position(&self) -> Option<(i32, i32)> {
@@ -956,6 +1047,99 @@ fn load_windows(backend: BackendKind, icon_cache: &mut IconCache) -> Result<Vec<
     Ok(entries)
 }
 
+fn draw_selected_indicator_shadow(
+    pixmap: &mut PixmapMut<'_>,
+    transform: Transform,
+    x: f32,
+    y: f32,
+    width: f32,
+    radius: f32,
+    config: &crate::config::AppConfig,
+) {
+    let spread = config.selected_indicator_shadow_size.max(0.0);
+    let base_alpha = selected_indicator_border_alpha();
+    if spread <= 0.0 || base_alpha == 0 {
+        return;
+    }
+
+    let layers = 3;
+    for layer in (1..=layers).rev() {
+        let t = layer as f32 / layers as f32;
+        let expand = spread * t;
+        let layer_alpha = ((base_alpha as f32) * (0.35 + 0.65 * (1.0 - t)) / layers as f32)
+            .round()
+            .clamp(1.0, 255.0) as u8;
+        let shadow = rounded_rect_path(
+            x - expand,
+            y - expand,
+            width + expand * 2.0,
+            width + expand * 2.0,
+            radius + expand,
+        );
+        let mut paint = Paint::default();
+        paint.set_color(Color::from_rgba8(
+            config.selected_indicator_border_color.r,
+            config.selected_indicator_border_color.g,
+            config.selected_indicator_border_color.b,
+            layer_alpha,
+        ));
+        pixmap.fill_path(
+            &shadow,
+            &paint,
+            tiny_skia::FillRule::Winding,
+            transform,
+            None,
+        );
+    }
+}
+
+fn draw_panel_shadow(
+    pixmap: &mut PixmapMut<'_>,
+    transform: Transform,
+    x: f32,
+    y: f32,
+    width: f32,
+    height: f32,
+    radius: f32,
+    config: &crate::config::AppConfig,
+) {
+    let spread = config.panel_shadow_size.max(0.0);
+    let base_alpha = panel_border_alpha();
+    if spread <= 0.0 || base_alpha == 0 {
+        return;
+    }
+
+    let layers = 3;
+    for layer in (1..=layers).rev() {
+        let t = layer as f32 / layers as f32;
+        let expand = spread * t;
+        let layer_alpha = ((base_alpha as f32) * (0.35 + 0.65 * (1.0 - t)) / layers as f32)
+            .round()
+            .clamp(1.0, 255.0) as u8;
+        let shadow = rounded_rect_path(
+            x - expand,
+            y - expand,
+            width + expand * 2.0,
+            height + expand * 2.0,
+            radius + expand,
+        );
+        let mut paint = Paint::default();
+        paint.set_color(Color::from_rgba8(
+            config.panel_shadow_color.r,
+            config.panel_shadow_color.g,
+            config.panel_shadow_color.b,
+            layer_alpha,
+        ));
+        pixmap.fill_path(
+            &shadow,
+            &paint,
+            tiny_skia::FillRule::Winding,
+            transform,
+            None,
+        );
+    }
+}
+
 fn create_background_effect(
     globals: &GlobalList,
     qh: &QueueHandle<Switcher>,
@@ -986,6 +1170,33 @@ fn create_background_effect(
         _manager: manager,
         _surface: effect,
     })
+}
+
+fn create_panel_shadow(
+    qh: &QueueHandle<Switcher>,
+    compositor: &CompositorState,
+    subcompositor: &SubcompositorState,
+    parent: &wl_surface::WlSurface,
+    buffer_scale: u32,
+) -> PanelShadow {
+    let config = *app_config();
+    let spread = config.panel_shadow_size.max(0.0).ceil() as u32;
+    let (subsurface, surface) = subcompositor.create_subsurface(parent.clone(), qh);
+    subsurface.set_sync();
+    subsurface.place_below(parent);
+    if buffer_scale > 1 {
+        surface.set_buffer_scale(buffer_scale as i32);
+    }
+
+    if let Ok(region) = Region::new(compositor) {
+        surface.set_input_region(Some(region.wl_region()));
+    }
+
+    PanelShadow {
+        subsurface,
+        surface,
+        spread,
+    }
 }
 
 fn create_selected_indicator(
