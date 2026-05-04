@@ -18,22 +18,33 @@ pub struct IconCache {
 }
 
 impl IconCache {
-    pub fn icon_for(&mut self, app_id: &str) -> Arc<Pixmap> {
-        if let Some(icon) = self.icons.get(app_id) {
+    pub fn icon_for(&mut self, app_id: &str, title: Option<&str>) -> Arc<Pixmap> {
+        let cache_key = icon_cache_key(app_id, title);
+        if let Some(icon) = self.icons.get(&cache_key) {
             return icon.clone();
         }
-        let icon = load_icon(app_id).unwrap_or_else(|_| placeholder_icon(icon_size()));
+        let icon = load_icon(app_id, title).unwrap_or_else(|_| placeholder_icon(icon_size()));
         let icon = Arc::new(icon);
-        self.icons.insert(app_id.to_string(), icon.clone());
+        self.icons.insert(cache_key, icon.clone());
         icon
     }
 }
 
-fn load_icon(app_id: &str) -> Result<Pixmap> {
+fn icon_cache_key(app_id: &str, title: Option<&str>) -> String {
+    format!("{}\t{}", app_id, title.unwrap_or(""))
+}
+
+fn load_icon(app_id: &str, title: Option<&str>) -> Result<Pixmap> {
     let icon_size = icon_size();
     let mut candidates = icon_name_candidates(app_id);
+    if let Some(title) = title {
+        let mut seen = candidates.iter().cloned().collect::<HashSet<_>>();
+        for candidate in icon_name_candidates(title) {
+            push_icon_candidate(&mut candidates, &mut seen, &candidate);
+        }
+    }
 
-    if let Some(icon_name) = desktop_icon_name(app_id) {
+    if let Some(icon_name) = desktop_icon_name(&candidates) {
         candidates.push(icon_name);
     }
 
@@ -80,6 +91,7 @@ fn icon_name_candidates(app_id: &str) -> Vec<String> {
     if let Some(last) = normalized.rsplit('.').next() {
         push_icon_candidate(&mut candidates, &mut seen, last);
     }
+    push_semantic_icon_candidates(&mut candidates, &mut seen, app_id);
 
     candidates
 }
@@ -97,6 +109,31 @@ fn push_icon_candidate(candidates: &mut Vec<String>, seen: &mut HashSet<String>,
     if lower != name && seen.insert(lower.clone()) {
         candidates.push(lower);
     }
+}
+
+fn push_semantic_icon_candidates(
+    candidates: &mut Vec<String>,
+    seen: &mut HashSet<String>,
+    text: &str,
+) {
+    let lower = text.to_ascii_lowercase();
+    if !contains_password_related_term(&lower) {
+        return;
+    }
+    for name in [
+        "dialog-password",
+        "password-manager",
+        "password",
+        "preferences-desktop-user-password",
+    ] {
+        push_icon_candidate(candidates, seen, name);
+    }
+}
+
+fn contains_password_related_term(text: &str) -> bool {
+    ["password", "passphrase", "keyring", "wallet", "secret"]
+        .iter()
+        .any(|term| text.contains(term))
 }
 
 fn pixmap_from_image(image: DynamicImage) -> Pixmap {
@@ -163,12 +200,11 @@ fn render_svg(path: &Path, size: u32) -> Result<Pixmap> {
     Ok(pixmap)
 }
 
-fn desktop_icon_name(app_id: &str) -> Option<String> {
-    let candidates = icon_name_candidates(app_id);
+fn desktop_icon_name(candidates: &[String]) -> Option<String> {
     let paths = application_dirs();
 
     for base in &paths {
-        for name in &candidates {
+        for name in candidates {
             let file = if name.ends_with(".desktop") {
                 base.join(name)
             } else {
@@ -185,7 +221,7 @@ fn desktop_icon_name(app_id: &str) -> Option<String> {
     }
 
     let mut candidates_lower = HashSet::new();
-    for name in &candidates {
+    for name in candidates {
         candidates_lower.insert(name.to_ascii_lowercase());
     }
 
@@ -203,11 +239,20 @@ fn desktop_icon_name(app_id: &str) -> Option<String> {
                 Ok(Some(info)) => info,
                 _ => continue,
             };
-            let startup = match info.startup_wm_class {
-                Some(startup) => startup,
-                None => continue,
-            };
-            if candidates_lower.contains(&startup.to_ascii_lowercase()) {
+            let matches_name = info
+                .names
+                .iter()
+                .any(|name| candidates_lower.contains(&name.to_ascii_lowercase()));
+            let matches_startup = info
+                .startup_wm_class
+                .as_ref()
+                .map(|startup| candidates_lower.contains(&startup.to_ascii_lowercase()))
+                .unwrap_or(false);
+            let matches_exec = info
+                .exec_names
+                .iter()
+                .any(|exec| candidates_lower.contains(&exec.to_ascii_lowercase()));
+            if matches_name || matches_startup || matches_exec {
                 if let Some(icon) = info.icon {
                     return Some(icon);
                 }
@@ -381,7 +426,9 @@ fn push_path(paths: &mut Vec<PathBuf>, seen: &mut HashSet<PathBuf>, path: PathBu
 
 struct DesktopEntryInfo {
     icon: Option<String>,
+    names: Vec<String>,
     startup_wm_class: Option<String>,
+    exec_names: Vec<String>,
 }
 
 fn parse_desktop_entry(path: &Path) -> Result<Option<DesktopEntryInfo>> {
@@ -391,7 +438,9 @@ fn parse_desktop_entry(path: &Path) -> Result<Option<DesktopEntryInfo>> {
     };
     let mut in_entry = false;
     let mut icon = None;
+    let mut names = Vec::new();
     let mut startup_wm_class = None;
+    let mut exec_names = Vec::new();
     for line in content.lines() {
         let line = line.trim();
         if line.is_empty() || line.starts_with('#') {
@@ -411,6 +460,10 @@ fn parse_desktop_entry(path: &Path) -> Result<Option<DesktopEntryInfo>> {
             }
             continue;
         }
+        if let Some(value) = desktop_name_value(line) {
+            names.push(value.to_string());
+            continue;
+        }
         if let Some(value) = line.strip_prefix("StartupWMClass=") {
             let value = value.trim();
             if !value.is_empty() {
@@ -418,14 +471,45 @@ fn parse_desktop_entry(path: &Path) -> Result<Option<DesktopEntryInfo>> {
             }
             continue;
         }
+        if let Some(value) = line.strip_prefix("Exec=") {
+            if let Some(exec_name) = desktop_exec_name(value) {
+                exec_names.push(exec_name);
+            }
+            continue;
+        }
     }
-    if icon.is_none() && startup_wm_class.is_none() {
+    if icon.is_none() && names.is_empty() && startup_wm_class.is_none() && exec_names.is_empty() {
         return Ok(None);
     }
     Ok(Some(DesktopEntryInfo {
         icon,
+        names,
         startup_wm_class,
+        exec_names,
     }))
+}
+
+fn desktop_name_value(line: &str) -> Option<&str> {
+    if let Some(value) = line.strip_prefix("Name=") {
+        let value = value.trim();
+        return (!value.is_empty()).then_some(value);
+    }
+    if !line.starts_with("Name[") {
+        return None;
+    }
+    let (_key, value) = line.split_once('=')?;
+    let value = value.trim();
+    (!value.is_empty()).then_some(value)
+}
+
+fn desktop_exec_name(value: &str) -> Option<String> {
+    let command = value.split_whitespace().next()?.trim_matches('"');
+    let name = Path::new(command)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or(command)
+        .trim();
+    (!name.is_empty()).then(|| name.to_string())
 }
 
 #[cfg(test)]
@@ -462,5 +546,23 @@ mod tests {
         );
         assert!(candidates.iter().any(|name| name == "com.example.App"));
         assert!(candidates.iter().any(|name| name == "app"));
+    }
+
+    #[test]
+    fn desktop_name_value_handles_localized_names() {
+        assert_eq!(desktop_name_value("Name=Counter-Strike 2"), Some("Counter-Strike 2"));
+        assert_eq!(
+            desktop_name_value("Name[en_US]=Counter-Strike 2"),
+            Some("Counter-Strike 2")
+        );
+        assert_eq!(desktop_name_value("Icon=steam_icon_730"), None);
+    }
+
+    #[test]
+    fn password_related_candidates_use_generic_password_icons() {
+        let candidates = icon_name_candidates("org.kde.ksecretd");
+
+        assert!(candidates.iter().any(|name| name == "dialog-password"));
+        assert!(candidates.iter().any(|name| name == "password-manager"));
     }
 }

@@ -7,14 +7,17 @@ use crate::types::BackendKind;
 
 pub struct BackendWindow {
     pub id: u64,
+    pub title: Option<String>,
     pub app_id: Option<String>,
     pub pid: Option<i64>,
+    pub process_name: Option<String>,
     pub is_focused: bool,
 }
 
 #[derive(Deserialize)]
 struct NiriWindow {
     id: u64,
+    title: Option<String>,
     app_id: Option<String>,
     pid: Option<i64>,
     is_focused: bool,
@@ -30,6 +33,7 @@ struct HyprClient {
     mapped: Option<bool>,
     hidden: Option<bool>,
     pid: Option<i64>,
+    title: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -82,6 +86,21 @@ fn non_empty_app_id(app_id: Option<String>) -> Option<String> {
         let app_id = app_id.trim();
         (!app_id.is_empty()).then(|| app_id.to_string())
     })
+}
+
+fn process_name(pid: Option<i64>) -> Option<String> {
+    let pid = pid?;
+    let comm = std::fs::read_to_string(format!("/proc/{pid}/comm"))
+        .ok()
+        .and_then(|name| non_empty_app_id(Some(name)));
+    if comm.is_some() {
+        return comm;
+    }
+
+    std::fs::read_link(format!("/proc/{pid}/exe"))
+        .ok()
+        .and_then(|path| path.file_name().and_then(|name| name.to_str()).map(str::to_string))
+        .and_then(|name| non_empty_app_id(Some(name)))
 }
 
 pub fn focus_window(backend: BackendKind, id: u64) -> Result<()> {
@@ -148,8 +167,10 @@ pub fn backend_windows(backend: BackendKind) -> Result<Vec<BackendWindow>> {
                 .into_iter()
                 .map(|window| BackendWindow {
                     id: window.id,
+                    title: non_empty_app_id(window.title),
                     app_id: non_empty_app_id(window.app_id),
                     pid: window.pid,
+                    process_name: process_name(window.pid),
                     is_focused: window.is_focused,
                 })
                 .collect())
@@ -173,8 +194,10 @@ pub fn backend_windows(backend: BackendKind) -> Result<Vec<BackendWindow>> {
                     .or_else(|| non_empty_app_id(client.class.clone()));
                 windows.push(BackendWindow {
                     id,
+                    title: non_empty_app_id(client.title.clone()),
                     app_id,
                     pid: client.pid,
+                    process_name: process_name(client.pid),
                     is_focused: client.focus.unwrap_or(false),
                 });
             }

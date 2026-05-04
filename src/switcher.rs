@@ -1048,11 +1048,12 @@ fn load_windows(backend: BackendKind, icon_cache: &mut IconCache) -> Result<Vec<
                 .pid
                 .and_then(|pid| app_ids_by_pid.get(&pid).cloned())
         })
+        .or(window.process_name)
         .unwrap_or_else(|| "application-x-executable".to_string());
         if !seen.insert(window.id) {
             continue;
         }
-        let icon = icon_cache.icon_for(&app_id);
+        let icon = icon_cache.icon_for(&app_id, window.title.as_deref());
         entries.push(WindowEntry {
             id: window.id,
             is_focused: window.is_focused,
