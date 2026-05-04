@@ -22,6 +22,7 @@ use smithay_client_toolkit::{
     subcompositor::SubcompositorState,
 };
 use std::collections::HashSet;
+use std::collections::HashMap;
 use std::io::Read;
 use std::os::fd::{AsFd, AsRawFd};
 use std::os::unix::net::UnixStream;
@@ -1028,12 +1029,26 @@ fn layout_size(count: usize, icon_size: u32) -> (u32, u32) {
 
 fn load_windows(backend: BackendKind, icon_cache: &mut IconCache) -> Result<Vec<WindowEntry>> {
     let windows = backend_windows(backend)?;
+    let mut app_ids_by_pid = HashMap::new();
+    for window in &windows {
+        let Some(pid) = window.pid else {
+            continue;
+        };
+        let Some(app_id) = window.app_id.as_ref() else {
+            continue;
+        };
+        app_ids_by_pid.entry(pid).or_insert_with(|| app_id.clone());
+    }
+
     let mut seen = HashSet::new();
     let mut entries = Vec::new();
     for window in windows {
-        let app_id = window
-            .app_id
-            .unwrap_or_else(|| "application-x-executable".to_string());
+        let app_id = window.app_id.or_else(|| {
+            window
+                .pid
+                .and_then(|pid| app_ids_by_pid.get(&pid).cloned())
+        })
+        .unwrap_or_else(|| "application-x-executable".to_string());
         if !seen.insert(window.id) {
             continue;
         }

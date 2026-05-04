@@ -8,7 +8,16 @@ use crate::types::BackendKind;
 pub struct BackendWindow {
     pub id: u64,
     pub app_id: Option<String>,
+    pub pid: Option<i64>,
     pub is_focused: bool,
+}
+
+#[derive(Deserialize)]
+struct NiriWindow {
+    id: u64,
+    app_id: Option<String>,
+    pid: Option<i64>,
+    is_focused: bool,
 }
 
 #[derive(Deserialize)]
@@ -20,6 +29,7 @@ struct HyprClient {
     focus: Option<bool>,
     mapped: Option<bool>,
     hidden: Option<bool>,
+    pid: Option<i64>,
 }
 
 #[derive(Deserialize)]
@@ -51,6 +61,27 @@ fn hyprctl_json<T: for<'de> Deserialize<'de>>(args: &[&str]) -> Result<T> {
     let text = hyprctl(args)?;
     let value = serde_json::from_str(&text).context("parse hyprctl json")?;
     Ok(value)
+}
+
+fn niri_msg_json<T: for<'de> Deserialize<'de>>(command: &str) -> Result<T> {
+    let output = Command::new("niri")
+        .args(["msg", "--json", command])
+        .output()
+        .context("spawn niri msg")?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(anyhow::anyhow!("niri msg failed: {stderr}"));
+    }
+    let text = String::from_utf8_lossy(&output.stdout);
+    let value = serde_json::from_str(&text).context("parse niri msg json")?;
+    Ok(value)
+}
+
+fn non_empty_app_id(app_id: Option<String>) -> Option<String> {
+    app_id.and_then(|app_id| {
+        let app_id = app_id.trim();
+        (!app_id.is_empty()).then(|| app_id.to_string())
+    })
 }
 
 pub fn focus_window(backend: BackendKind, id: u64) -> Result<()> {
@@ -112,18 +143,13 @@ pub fn focused_output_info(backend: BackendKind) -> Result<(Option<(i32, i32)>, 
 pub fn backend_windows(backend: BackendKind) -> Result<Vec<BackendWindow>> {
     match backend {
         BackendKind::Niri => {
-            let socket = Socket::connect().context("connect to niri socket")?;
-            let (reply, _events) = socket.send(Request::Windows).context("send windows request")?;
-            let windows = match reply {
-                Ok(Response::Windows(windows)) => windows,
-                Ok(_) => return Ok(Vec::new()),
-                Err(message) => return Err(anyhow::anyhow!(message)),
-            };
+            let windows = niri_msg_json::<Vec<NiriWindow>>("windows")?;
             Ok(windows
                 .into_iter()
                 .map(|window| BackendWindow {
                     id: window.id,
-                    app_id: window.app_id,
+                    app_id: non_empty_app_id(window.app_id),
+                    pid: window.pid,
                     is_focused: window.is_focused,
                 })
                 .collect())
@@ -143,10 +169,12 @@ pub fn backend_windows(backend: BackendKind) -> Result<Vec<BackendWindow>> {
                     Some(id) => id,
                     None => continue,
                 };
-                let app_id = client.initial_class.clone().or(client.class.clone());
+                let app_id = non_empty_app_id(client.initial_class.clone())
+                    .or_else(|| non_empty_app_id(client.class.clone()));
                 windows.push(BackendWindow {
                     id,
                     app_id,
+                    pid: client.pid,
                     is_focused: client.focus.unwrap_or(false),
                 });
             }

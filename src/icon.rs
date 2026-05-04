@@ -1,8 +1,9 @@
 use anyhow::{Context, Result};
 use freedesktop_icons::lookup;
-use image::{imageops::FilterType, DynamicImage};
+use image::{DynamicImage, imageops::FilterType};
 use resvg::usvg;
 use std::{
+    collections::HashSet,
     fs,
     path::{Path, PathBuf},
     sync::Arc,
@@ -30,14 +31,7 @@ impl IconCache {
 
 fn load_icon(app_id: &str) -> Result<Pixmap> {
     let icon_size = icon_size();
-    let mut candidates = Vec::new();
-    candidates.push(app_id.to_string());
-    if let Some(trimmed) = app_id.strip_suffix(".desktop") {
-        candidates.push(trimmed.to_string());
-    }
-    if let Some(last) = app_id.rsplit('.').next() {
-        candidates.push(last.to_string());
-    }
+    let mut candidates = icon_name_candidates(app_id);
 
     if let Some(icon_name) = desktop_icon_name(app_id) {
         candidates.push(icon_name);
@@ -45,8 +39,12 @@ fn load_icon(app_id: &str) -> Result<Pixmap> {
 
     let path = candidates
         .into_iter()
-        .find_map(|name| lookup(&name).with_size(icon_size as u16).find())
-        .or_else(|| lookup("application-x-executable").with_size(icon_size as u16).find())
+        .find_map(|name| resolve_icon_path(&name, icon_size))
+        .or_else(|| {
+            lookup("application-x-executable")
+                .with_size(icon_size as u16)
+                .find()
+        })
         .context("no icon found")?;
 
     if path.extension().and_then(|ext| ext.to_str()) == Some("svg") {
@@ -56,6 +54,49 @@ fn load_icon(app_id: &str) -> Result<Pixmap> {
     let image = image::open(&path).with_context(|| format!("open icon {}", path.display()))?;
     let resized = image.resize_exact(icon_size, icon_size, FilterType::Lanczos3);
     Ok(pixmap_from_image(resized))
+}
+
+fn resolve_icon_path(name: &str, icon_size: u32) -> Option<PathBuf> {
+    let path = Path::new(name);
+    if path.is_absolute() && path.is_file() {
+        return Some(path.to_path_buf());
+    }
+    lookup(name)
+        .with_size(icon_size as u16)
+        .find()
+        .or_else(|| find_installed_icon(name, icon_size))
+}
+
+fn icon_name_candidates(app_id: &str) -> Vec<String> {
+    let mut candidates = Vec::new();
+    let mut seen = HashSet::new();
+    let app_id = app_id.trim();
+    let normalized = app_id.strip_suffix(".desktop").unwrap_or(app_id);
+
+    push_icon_candidate(&mut candidates, &mut seen, app_id);
+    if normalized != app_id {
+        push_icon_candidate(&mut candidates, &mut seen, normalized);
+    }
+    if let Some(last) = normalized.rsplit('.').next() {
+        push_icon_candidate(&mut candidates, &mut seen, last);
+    }
+
+    candidates
+}
+
+fn push_icon_candidate(candidates: &mut Vec<String>, seen: &mut HashSet<String>, name: &str) {
+    let name = name.trim();
+    if name.is_empty() {
+        return;
+    }
+    if seen.insert(name.to_string()) {
+        candidates.push(name.to_string());
+    }
+
+    let lower = name.to_ascii_lowercase();
+    if lower != name && seen.insert(lower.clone()) {
+        candidates.push(lower);
+    }
 }
 
 fn pixmap_from_image(image: DynamicImage) -> Pixmap {
@@ -123,28 +164,8 @@ fn render_svg(path: &Path, size: u32) -> Result<Pixmap> {
 }
 
 fn desktop_icon_name(app_id: &str) -> Option<String> {
-    let mut candidates = Vec::new();
-    candidates.push(app_id.to_string());
-    if let Some(trimmed) = app_id.strip_suffix(".desktop") {
-        candidates.push(trimmed.to_string());
-    }
-    if let Some(last) = app_id.rsplit('.').next() {
-        candidates.push(last.to_string());
-    }
-
-    let mut paths = Vec::new();
-    paths.push(PathBuf::from("/usr/share/applications"));
-    paths.push(PathBuf::from("/usr/local/share/applications"));
-    if let Some(home) = std::env::var_os("HOME") {
-        paths.push(PathBuf::from(home).join(".local/share/applications"));
-    }
-    if let Ok(xdg_dirs) = std::env::var("XDG_DATA_DIRS") {
-        for dir in xdg_dirs.split(':') {
-            if !dir.is_empty() {
-                paths.push(PathBuf::from(dir).join("applications"));
-            }
-        }
-    }
+    let candidates = icon_name_candidates(app_id);
+    let paths = application_dirs();
 
     for base in &paths {
         for name in &candidates {
@@ -163,13 +184,13 @@ fn desktop_icon_name(app_id: &str) -> Option<String> {
         }
     }
 
-    let mut candidates_lower = std::collections::HashSet::new();
+    let mut candidates_lower = HashSet::new();
     for name in &candidates {
         candidates_lower.insert(name.to_ascii_lowercase());
     }
 
     for base in &paths {
-        let entries = match fs::read_dir(&base) {
+        let entries = match fs::read_dir(base) {
             Ok(entries) => entries,
             Err(_) => continue,
         };
@@ -195,6 +216,167 @@ fn desktop_icon_name(app_id: &str) -> Option<String> {
     }
 
     None
+}
+
+fn application_dirs() -> Vec<PathBuf> {
+    let mut paths = Vec::new();
+    let mut seen = HashSet::new();
+    push_path(
+        &mut paths,
+        &mut seen,
+        PathBuf::from("/usr/share/applications"),
+    );
+    push_path(
+        &mut paths,
+        &mut seen,
+        PathBuf::from("/usr/local/share/applications"),
+    );
+    push_path(
+        &mut paths,
+        &mut seen,
+        PathBuf::from("/var/lib/flatpak/exports/share/applications"),
+    );
+    if let Some(home) = std::env::var_os("HOME") {
+        let home = PathBuf::from(home);
+        push_path(
+            &mut paths,
+            &mut seen,
+            home.join(".local/share/applications"),
+        );
+        push_path(
+            &mut paths,
+            &mut seen,
+            home.join(".local/share/flatpak/exports/share/applications"),
+        );
+    }
+    if let Some(data_home) = std::env::var_os("XDG_DATA_HOME") {
+        push_path(
+            &mut paths,
+            &mut seen,
+            PathBuf::from(data_home).join("applications"),
+        );
+    }
+    if let Ok(xdg_dirs) = std::env::var("XDG_DATA_DIRS") {
+        for dir in xdg_dirs.split(':') {
+            if !dir.is_empty() {
+                push_path(
+                    &mut paths,
+                    &mut seen,
+                    PathBuf::from(dir).join("applications"),
+                );
+            }
+        }
+    }
+    paths
+}
+
+fn icon_dirs() -> Vec<PathBuf> {
+    let mut paths = Vec::new();
+    let mut seen = HashSet::new();
+    if let Some(data_home) = std::env::var_os("XDG_DATA_HOME") {
+        push_path(
+            &mut paths,
+            &mut seen,
+            PathBuf::from(data_home).join("icons"),
+        );
+    }
+    if let Some(home) = std::env::var_os("HOME") {
+        let home = PathBuf::from(home);
+        push_path(&mut paths, &mut seen, home.join(".local/share/icons"));
+        push_path(&mut paths, &mut seen, home.join(".icons"));
+    }
+    if let Ok(xdg_dirs) = std::env::var("XDG_DATA_DIRS") {
+        for dir in xdg_dirs.split(':') {
+            if !dir.is_empty() {
+                push_path(&mut paths, &mut seen, PathBuf::from(dir).join("icons"));
+            }
+        }
+    }
+    push_path(&mut paths, &mut seen, PathBuf::from("/usr/share/icons"));
+    push_path(
+        &mut paths,
+        &mut seen,
+        PathBuf::from("/usr/local/share/icons"),
+    );
+    paths
+}
+
+fn find_installed_icon(name: &str, icon_size: u32) -> Option<PathBuf> {
+    let mut best = None;
+    for base in icon_dirs() {
+        collect_best_icon(&base, name, icon_size, &mut best);
+    }
+    best.map(|candidate| candidate.path)
+}
+
+struct IconPathCandidate {
+    path: PathBuf,
+    score: u32,
+}
+
+fn collect_best_icon(dir: &Path, name: &str, icon_size: u32, best: &mut Option<IconPathCandidate>) {
+    let entries = match fs::read_dir(dir) {
+        Ok(entries) => entries,
+        Err(_) => return,
+    };
+
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            collect_best_icon(&path, name, icon_size, best);
+            continue;
+        }
+        if !is_supported_icon_file(&path)
+            || path.file_stem().and_then(|stem| stem.to_str()) != Some(name)
+        {
+            continue;
+        }
+
+        let score = icon_path_score(&path, icon_size);
+        let replace = best
+            .as_ref()
+            .map(|candidate| score < candidate.score)
+            .unwrap_or(true);
+        if replace {
+            *best = Some(IconPathCandidate { path, score });
+        }
+    }
+}
+
+fn is_supported_icon_file(path: &Path) -> bool {
+    matches!(
+        path.extension().and_then(|ext| ext.to_str()),
+        Some("png" | "jpg" | "jpeg" | "svg")
+    )
+}
+
+fn icon_path_score(path: &Path, icon_size: u32) -> u32 {
+    let size_delta = path
+        .components()
+        .filter_map(|component| component.as_os_str().to_str())
+        .filter_map(directory_icon_size)
+        .map(|size| size.abs_diff(icon_size))
+        .min()
+        .unwrap_or(icon_size);
+    let symbolic_penalty = path
+        .components()
+        .any(|component| component.as_os_str().to_string_lossy().contains("symbolic"))
+        .then_some(1)
+        .unwrap_or(0);
+
+    size_delta * 2 + symbolic_penalty
+}
+
+fn directory_icon_size(value: &str) -> Option<u32> {
+    let value = value.strip_suffix("@2x").unwrap_or(value);
+    let first = value.split('x').next()?;
+    first.parse().ok()
+}
+
+fn push_path(paths: &mut Vec<PathBuf>, seen: &mut HashSet<PathBuf>, path: PathBuf) {
+    if seen.insert(path.clone()) {
+        paths.push(path);
+    }
 }
 
 struct DesktopEntryInfo {
@@ -244,4 +426,41 @@ fn parse_desktop_entry(path: &Path) -> Result<Option<DesktopEntryInfo>> {
         icon,
         startup_wm_class,
     }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn app_id_candidates_include_normalized_forms() {
+        let candidates = icon_name_candidates("org.chromium.Chromium");
+
+        assert!(
+            candidates
+                .iter()
+                .any(|name| name == "org.chromium.Chromium")
+        );
+        assert!(
+            candidates
+                .iter()
+                .any(|name| name == "org.chromium.chromium")
+        );
+        assert!(candidates.iter().any(|name| name == "Chromium"));
+        assert!(candidates.iter().any(|name| name == "chromium"));
+        assert!(!candidates.iter().any(|name| name == "google-chrome"));
+    }
+
+    #[test]
+    fn desktop_suffix_is_optional_for_candidates() {
+        let candidates = icon_name_candidates("com.example.App.desktop");
+
+        assert!(
+            candidates
+                .iter()
+                .any(|name| name == "com.example.App.desktop")
+        );
+        assert!(candidates.iter().any(|name| name == "com.example.App"));
+        assert!(candidates.iter().any(|name| name == "app"));
+    }
 }
